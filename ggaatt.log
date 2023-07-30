@@ -1,0 +1,738 @@
+"scripts/chatgpt-st.py" ```import os
+import requests
+import streamlit as st
+import openai
+from IPython.display import display
+from PIL import Image
+import dotenv
+dotenv.load_dotenv(verbose=True)
+image_dir_name = "images"
+image_dir = os.path.join(os.curdir, image_dir_name)
+response = False
+prompt_tokens = 0
+completion_tokes = 0
+total_tokens_used = 0
+cost_of_response = 0
+API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = API_KEY
+
+
+def make_request(question_input: str):
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": f"{question_input}"},
+        ]
+    )
+    return response
+
+
+st.header("Streamlit + OpenAI ChatGPT API")
+
+st.markdown("""---""")
+
+question_input = st.text_input("Enter question", value = "")
+rerun_button = st.button("Rerun")
+
+st.markdown("""---""")
+
+if question_input:
+    response = make_request(question_input)
+else:
+    pass
+
+if rerun_button:
+    response = make_request(question_input)
+else:
+    pass
+
+if response:
+    st.write("Response:")
+    st.write(response["choices"][0]["message"]["content"])
+
+    prompt_tokens = response["usage"]["prompt_tokens"]
+    completion_tokes = response["usage"]["completion_tokens"]
+    total_tokens_used = response["usage"]["total_tokens"]
+
+    cost_of_response = total_tokens_used * 0.000002
+    if st.button("Summarize"):
+        prompt = response
+        def make_summary(prompt: str):
+            response_summary = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": f"Summarize this {prompt} in one sentence."},
+                ]
+            )
+            return response_summary
+        answer = make_summary(prompt)["choices"][0]["message"]["content"]
+        st.write(answer)```. this is the python code to complete with a prompt on openai chat completions and get the summary of the response. "//Users/aswin/Documents/underdog-memeletter/server/api/subscribe.post.ts" ```import { JsonDB } from "../utils/json_db";
+
+export default defineEventHandler(async (event) => {
+  try {
+    const sessionData = await isAuthenticated(event);
+    const publicKey = sessionData.user?.name;
+
+    const db = new JsonDB("/Users/aswin/Documents/underdog-memeletter/db.json");
+
+    if (db.readOne("subscribers").includes(publicKey)) {
+      return {
+        statusCode: 409,
+        message: "Already subscribed to MemeLetter",
+      };
+    }
+
+    db.update("subscribers", [...db.readOne("subscribers"), publicKey]);
+
+    return {
+      statusCode: 200,
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      message: `${error}`,
+    };
+  }
+});
+```
+"//Users/aswin/Documents/underdog-memeletter/server/api/subscribers.get.ts" ```import { JsonDB } from "../utils/json_db";
+
+export default defineEventHandler(async (event) => {
+  try {
+    const db = new JsonDB("/Users/aswin/Documents/underdog-memeletter/db.json");
+
+    const subscribers: string[] = db.readOne("subscribers");
+
+    return {
+      statusCode: 200,
+      subscribers,
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      message: `${error}`,
+    };
+  }
+});
+```
+"//Users/aswin/Documents/underdog-memeletter/server/api/auth/[...].ts" ```import CredentialsProvider from "next-auth/providers/credentials";
+import { NuxtAuthHandler } from "#auth";
+import { SigninMessage } from "~/server/utils/signin_message";
+
+const config = useRuntimeConfig();
+
+export default NuxtAuthHandler({
+  secret: config.authSecret,
+  session: {
+    strategy: "jwt",
+  },
+  providers: [
+    // @ts-ignore for some reason analyzer thinks .default doesn't exist
+    CredentialsProvider.default({
+      name: "Solana",
+      credentials: {
+        message: {
+          label: "Message",
+          type: "text",
+        },
+        signature: {
+          label: "Signature",
+          type: "text",
+        },
+      },
+
+      async authorize(credentials: any, req: any) {
+        try {
+          const signinMessage = new SigninMessage(
+            JSON.parse(credentials?.message || "{}")
+          );
+          const nextAuthUrl = new URL(config.public.nextauthUrl);
+
+          if (signinMessage.domain !== nextAuthUrl.host) {
+            return null;
+          }
+
+          const csrfToken: string = req.body?.csrfToken;
+
+          if (signinMessage.nonce !== csrfToken) {
+            return null;
+          }
+
+          const validationResult = await signinMessage.validate(
+            credentials?.signature || ""
+          );
+
+          if (!validationResult)
+            throw new Error("Could not validate the signed message");
+
+          return {
+            id: signinMessage.publicKey,
+          };
+        } catch (e) {
+          console.log("ERROR", e);
+          return null;
+        }
+      },
+    }),
+  ],
+  callbacks: {
+    async session({ session, token }) {
+      // @ts-ignore
+      session.publicKey = token.sub;
+      if (session.user) {
+        session.user.name = token.sub;
+      }
+      return session;
+    },
+  },
+});
+```
+"//Users/aswin/Documents/underdog-memeletter/server/api/generate/index.post.ts" ```import { Configuration, OpenAIApi } from 'openai'
+const config = useRuntimeConfig();
+
+const configuration = new Configuration({
+  apiKey: config.openaiApiKey
+});
+const openaiApi = new OpenAIApi(configuration);
+
+export default defineEventHandler(async (event) => {
+
+  const {prompt} = (await readBody(event)) as { prompt: string };
+
+  try {
+    const response = await openaiApi.createImage({
+      prompt: prompt,
+      n: 1,
+      size: '1024x1024',
+      response_format: 'url'
+    })
+    return {
+      statusCode: 200,
+      image: response.data.data[0].url || ''
+    }
+  } catch (error: any) {
+    console.log(error);
+    return {
+      statusCode: 500,
+      message: `${error}`,
+    };
+  }
+});```
+"//Users/aswin/Documents/underdog-memeletter/server/api/nfts/batch.post.ts" ```import { CreateNFTBodyParams, UnderdogAPI } from "../../utils/underdog";
+import Arweave from "arweave";
+
+const config = useRuntimeConfig();
+
+export default defineEventHandler(async (event) => {
+    try {
+        const underdog = new UnderdogAPI(config.underdogApiKey);
+
+        const createNFTBodyParams: CreateNFTBodyParams = (await readBody(event)) as CreateNFTBodyParams;
+
+        // const arweave = Arweave.init({
+        //     host: "arweave.net",
+        //     port: 443,
+        //     protocol: "https",
+        //     timeout: 20000,
+        //     logging: false,
+        // })
+
+        // const transaction = await arweave.createTransaction({
+        //     data: Buffer.from(
+        //         createNFTBodyParams.image.split(",")[1],
+        //         "base64"
+        //     ),
+        // });
+
+        // transaction.addTag("Content-Type", "image/png");
+
+        // const wallet = JSON.parse(config.arWallet)
+
+        // await arweave.transactions.sign(transaction, wallet);
+
+        // const response = await arweave.transactions.post(transaction);
+
+        // const id = transaction.id;
+        // const imageUrl = id ? `https://arweave.net/${id}` : undefined;
+
+        // if (!imageUrl) {
+        //     return {
+        //         statusCode: 500,
+        //         message: "Image upload failed",
+        //     };
+        // }
+
+
+        const db = new JsonDB("/Users/aswin/Documents/underdog-memeletter/db.json");
+        const subscribers: string[] = db.readOne("subscribers");
+
+        await underdog.nftsBatch(subscribers,createNFTBodyParams)
+
+        return {
+            statusCode: 200,
+        };
+    } catch (error) {
+        return {
+            statusCode: 500,
+            message: `${error}`,
+        };
+    }
+});
+``` "/Users/aswin/Documents/underdog-memeletter/server/utils/underdog.ts" ```import axios, { AxiosInstance, AxiosResponse } from "axios";
+
+export interface CreateNFTResponse {
+  transactionId: string;
+  nftId: number;
+  projectId?: number;
+  transferable: boolean;
+  compressed: boolean;
+  mintAddress: string;
+}
+
+export interface CreateNFTBodyParams {
+  name: string;
+  image: string;
+  symbol?: string;
+  description?: string;
+  receiverAddress?: string;
+  upsert?: boolean;
+}
+
+export enum NFTType {
+  transferable = "t",
+  nonTransferable = "n",
+  compressed = "c",
+}
+
+export class UnderdogAPI {
+  private api: AxiosInstance;
+
+  constructor(apiKey: string) {
+    this.api = axios.create({
+      baseURL: "https://dev.underdogprotocol.com",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+  }
+
+  private async makePostRequest<TRes, TBody>(
+    url: string,
+    body: TBody
+  ): Promise<TRes> {
+    try {
+      const response: AxiosResponse<TRes> = await this.api.post(url, body, {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      return response.data;
+    } catch (error) {
+      console.log("error" , error);
+      throw new Error(`API request failed: ${error}`);
+    }
+  }
+
+  async createNFT(
+    projectId: number,
+    type: NFTType,
+    nftData: CreateNFTBodyParams
+  ) {
+    const url = `v2/projects/${type}/${projectId}/nfts`;
+
+    return this.makePostRequest<CreateNFTResponse, CreateNFTBodyParams>(
+      url,
+      nftData
+    );
+  }
+
+  async nftsBatch(recipients: string[], nft: CreateNFTBodyParams) {
+    const url = `v2/projects/t/1/nfts/batch`;
+
+    return this.makePostRequest<{}, CreateNFTBodyParams[]>(
+      url,
+      recipients.map((recipient) => {
+        return {
+          ...nft,
+          receiverAddress: recipient,
+          upsert: true,
+        };
+      })
+    );
+  }
+}
+```
+"/Users/aswin/Documents/underdog-memeletter/server/utils/json_db.ts" ```import fs from "fs";
+
+interface JsonDBSchema {
+  [key: string]: any;
+}
+
+export class JsonDB {
+  private readonly filePath: string;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  public read(): JsonDBSchema {
+    const fileContent = fs.readFileSync(this.filePath, "utf-8");
+    return JSON.parse(fileContent);
+  }
+
+  public readOne(key: string): any {
+    const data = this.read();
+    return data[key];
+  }
+
+  write(data: JsonDBSchema): void {
+    const fileContent = JSON.stringify(data, null, 2);
+    fs.writeFileSync(this.filePath, fileContent);
+  }
+
+  public create(key: string, value: any): void {
+    const data = this.read();
+    data[key] = value;
+    this.write(data);
+  }
+
+  public update(key: string, value: any): void {
+    const data = this.read();
+    if (data.hasOwnProperty(key)) {
+      data[key] = value;
+      this.write(data);
+    } else {
+      throw new Error(`Key ${key} does not exist`);
+    }
+  }
+
+  public delete(key: string): void {
+    const data = this.read();
+    if (data.hasOwnProperty(key)) {
+      delete data[key];
+      this.write(data);
+    } else {
+      throw new Error(`Key ${key} does not exist`);
+    }
+  }
+}
+```
+"/Users/aswin/Documents/underdog-memeletter/server/utils/signin_message.ts" ```import base58 from "bs58";
+import nacl from "tweetnacl";
+
+type SignMessage = {
+  domain: string;
+  publicKey: string;
+  nonce: string;
+  statement: string;
+};
+
+export class SigninMessage {
+  domain: any;
+  publicKey: any;
+  nonce: any;
+  statement: any;
+
+  constructor({ domain, publicKey, nonce, statement }: SignMessage) {
+    this.domain = domain;
+    this.publicKey = publicKey;
+    this.nonce = nonce;
+    this.statement = statement;
+  }
+
+  prepare() {
+    return `${this.statement}${this.nonce}`;
+  }
+
+  async validate(signature: string) {
+    const msg = this.prepare();
+    const signatureUint8 = base58.decode(signature);
+    const msgUint8 = new TextEncoder().encode(msg);
+    const pubKeyUint8 = base58.decode(this.publicKey);
+
+    return nacl.sign.detached.verify(msgUint8, signatureUint8, pubKeyUint8);
+  }
+}
+```
+"/Users/aswin/Documents/underdog-memeletter/server/utils/auth.ts" ```import { getServerSession } from "#auth";
+
+export const isAuthenticated = async (event: any) => {
+  const session = await getServerSession(event);
+
+  if (!session) {
+    throw createError({
+      statusCode: 401,
+      message: "You must be logged in to access this resource",
+    })
+  }
+
+  return session;
+};
+``` "/Users/aswin/Documents/underdog-memeletter/pages/index.vue" ```<script setup lang="ts" >
+import { useWallet } from "solana-wallets-vue";
+import type { Adapter } from "@solana/wallet-adapter-base";
+import { useToast } from "primevue/usetoast";
+import { SigninMessage } from "../server/utils/signin_message";
+import bs58 from "bs58";
+
+const isOpen = useState("isOpen", () => false)
+
+const { wallets, connected, publicKey, connect, select, disconnect, wallet, signMessage } = useWallet();
+
+const onConnect = async (adapter: Adapter) => {
+    try {
+        select(adapter.name);
+        await connect();
+        isOpen.value = false;
+    }
+    catch (err) {
+        console.log(err);
+        isOpen.value = false;
+    }
+}
+
+const { status, signIn, signOut, getCsrfToken, data: authData } = useAuth();
+
+const handleSignIn = async () => {
+    try {
+        const csrf = await getCsrfToken();
+        if (!publicKey.value || !csrf || !signMessage.value) return;
+
+        const message = new SigninMessage({
+            domain: window.location.host,
+            publicKey: publicKey.value.toString(),
+            statement: `Sign this message to authenticate as ${publicKey.value
+                .toString()
+                .slice(0, 5)}...\n\n`,
+            nonce: csrf,
+        });
+
+        const data = new TextEncoder().encode(message.prepare());
+        const signature = await signMessage.value(data);
+        const serializedSignature = bs58.encode(signature);
+
+        const res = await signIn("credentials", {
+            message: JSON.stringify(message),
+            redirect: false,
+            signature: serializedSignature,
+        });
+        if (res?.error) {
+            toast.add({
+                severity: "error",
+                summary: "Error",
+                detail: res.error,
+            })
+        }
+    } catch (error) {
+        console.log(error);
+        toast.add({
+            severity: "error",
+            summary: "Error",
+            detail: error,
+        })
+    }
+};
+
+const toast = useToast();
+
+watch(
+    () => connected.value,
+    (connected) => {
+        isOpen.value = false;
+        if (connected && status.value === "unauthenticated") {
+            handleSignIn().then(async () => {
+                toast.add({
+                    severity: "success",
+                    detail: "Logged in"
+                })
+                const res = await $fetch<{
+                    statusCode: number;
+                    message: string;
+                }>("/api/subscribe", {
+                    method: "POST",
+                    body: {
+                        publicKey: publicKey.value?.toString()
+                    }
+                })
+            })
+
+        }
+        if (!connected && status.value === "authenticated") {
+            console.log(authData.value);
+            signOut();
+        }
+    }
+);
+</script>
+
+<template>
+    <div class="h-screen w-screen flex flex-col items-center justify-center">
+        <Dialog v-model:visible="isOpen" :draggable="false" modal dismissable-mask header="Connect Wallet"
+            style="max-width: 400px;">
+            <div class="flex flex-col items-center justify-center space-y-3">
+                <button @click="onConnect(adapter)" v-for="{ adapter } in wallets" :key="adapter.name"
+                    class="w-80 h-14 p-2 px-4 space-x-4 flex flex-row items-center justify-start bg-gradient-to-br from-white/10 to-white/0 hover:scale-105 active:scale-95 rounded-lg transition-all duration-300">
+                    <img :src="adapter.icon" class="w-8 h-8" />
+                    <p class="text-xl font-medium">{{ adapter.name }}</p>
+                </button>
+            </div>
+        </Dialog>
+
+        <div v-if="publicKey" class="flex flex-col space-y-7 items-center justify-center">
+            <div v-if="authData?.user" class="flex flex-col items-center justify-center space-y-1.5">
+                <h1 class="text-3xl text-white/80">You Joined the MemeLetter! 💪</h1>
+                <p class="text-white/50">as {{ publicKey?.toBase58().slice(0, 4) }}...{{ publicKey?.toBase58().slice(-4) }}
+                </p>
+            </div>
+            <img class="h-80 rounded-md shadow-2xl shadow-black"
+                src="https://media0.giphy.com/media/l4FGpPki5v2Bcd6Ss/giphy.gif?cid=ecf05e47ed009xbxr52nzd6npu753ly3g5k0b4u0v8ks6b43&ep=v1_gifs_search&rid=giphy.gif&ct=g" />
+            <Button outlined @click="disconnect()" class="space-x-2">
+                <img :src="wallet?.adapter.icon" class="w-5 h-5" />
+                <div>
+                    Disconnect
+                </div>
+            </Button>
+        </div>
+        <div v-else class="flex flex-col space-y-7 items-center justify-center">
+            <img class="h-80 rounded-md shadow-2xl shadow-black"
+                src="https://media0.giphy.com/media/Lopx9eUi34rbq/giphy.gif?cid=ecf05e47wteiapo0z4g64dlvycgvn2mnwz13qehsv8lz6pv3&ep=v1_gifs_search&rid=giphy.gif&ct=g" />
+            <Button outlined @click="isOpen = true">Sign up for the MemeLetter 🔥</Button>
+        </div>
+    </div>
+</template>```
+"/Users/aswin/Documents/underdog-memeletter/pages/admin.vue" ```<script setup lang='ts'>
+import { useToast } from 'primevue/usetoast';
+import { CreateNFTBodyParams } from '../server/utils/underdog';
+import openaiApi from "../server/api/generate/openaiApi"
+
+
+  const { data } = await useAsyncData<{ subscribers: string[] }>('subscribers',
+    () => $fetch('/api/subscribers', {
+      method: 'GET',
+    })
+  );
+  
+  const toast = useToast();
+  
+  const nft = useState('nft', () => {
+    return {
+      name: '',
+      description: '',
+      symbol: '',
+      image: '',
+    }
+  });
+  
+  const imageName = useState<string>('imageName', () => '');
+  
+  const customImageBase64Uploader = async (event: any) => {
+    const file = event.files[0];
+    imageName.value = file.name;
+    const reader = new FileReader();
+    let blob = await fetch(file.objectURL).then((r) => r.blob());
+  
+    reader.readAsDataURL(blob);
+  
+    reader.onloadend = function () {
+      nft.value.image = reader.result?.toString() ?? '';
+    };
+  };
+  
+  const isLoading = useState('isLoading', () => false);
+  
+  const onSubmit = async () => {
+    toast.add({
+      severity: 'info', summary: 'Loading', detail: 'Distributing NFTs...', life: 3000,
+    });
+    isLoading.value = true;
+    const res = await $fetch('/api/nfts/batch', {
+      method: 'POST',
+      body: <CreateNFTBodyParams>{
+        image: nft.value.image,
+        name: nft.value.name,
+        description: nft.value.description,
+        symbol: nft.value.symbol,
+      }
+    })
+    if (res.statusCode == 200) {
+      toast.add({ severity: 'success', summary: 'Success', detail: 'Successfully distributed ✅', life: 3000 });
+      isLoading.value = false;
+    }
+  }
+  
+  const prompt = useState<string>('prompt', () => '');
+  
+  const generateImage = async () => {
+    try {
+      const response = await $fetch("/api/generate",{
+        method:"POST",
+        body: {
+          prompt: prompt.value,
+        }
+      });
+      if (response && response.statusCode === 200) {
+        nft.value.image = response.image;
+        console.log(nft.value.image);
+      }
+  
+    } catch (error: any) {
+      console.log(error);
+    }
+  }
+  </script>
+<template>
+    <div class="h-screen w-screen flex flex-row relative">
+      <div v-if="isLoading" class="w-screen h-screen flex items-center justify-center absolute z-30 backdrop-blur-lg">
+        <ProgressSpinner strokeWidth="4" />
+      </div>
+      <div class="w-1/2 flex flex-col justify-center items-center p-10 bg-white/[0.02] border-r border-r-white/5">
+        <div class="flex flex-col w-full">
+          <FileUpload v-if="!nft.image" mode="advanced" :fileLimit="1" :showUploadButton="false" name="meme"
+            accept="image/*" :maxFileSize="10000000" customUpload @uploader="customImageBase64Uploader" auto />
+  
+          <div v-else
+            class="text-lg mb-4 bg-gray-900 shadow-lg shadow-black/10 border-white/5 p-4 rounded-md text-white/50">
+            {{ imageName }}
+          </div>
+  
+          <div class="flex flex-col py-8 space-y-7">
+            <span class="p-float-label">
+              <InputText class="w-full" v-model="prompt" type="text" />
+              <label for="value">Prompt</label>
+              <img class="w-full" :src="nft.image" />
+            </span>
+  
+            <Button outlined class="w-[80%]" type="submit" label="Generate Image" @click="generateImage" />
+  
+            <span class="p-float-label">
+              <InputText class="w-full" v-model="nft.name" type="text" />
+              <label for="value">Name</label>
+            </span>
+  
+            <span class="p-float-label">
+              <InputText class="w-full" v-model="nft.symbol" type="text" />
+              <label for="value">Symbol</label>
+            </span>
+  
+            <span class="p-float-label">
+              <Textarea class="w-full" v-model="nft.description" type="text" />
+              <label for = "value">Description</label>
+            </span>
+          </div>
+        </div>
+      </div>
+  
+      <div :class="[ 'w-1/2 flex flex-col justify-center items-center p-10 space-y-5 transition-all duration-500',
+        nft.image === '' || nft.description === '' || nft.symbol === '' || nft.name === '' ? 'opacity-20 blur-lg' : ''
+      ]">
+        <div class="w-[80%] p-5 rounded-lg bg-white/5">
+          <p class="text-lg">{{ data?.subscribers.length }} Subscribers</p>
+          <p class = "text-white/80" v-for= "sub in data?.subscribers" :key= "sub">
+            {{ sub }}
+          </p>
+        </div>
+        <Button outlined class ="w-[80%]" type= "submit" label= "Send out MemeLetter" @click= "onSubmit" />
+      </div>
+    </div>
+  </template>
+  ```. this is my vue javascript app to generate an image with openai, mint and distribute it to subscribers. implement prompt chat completion with openai and summaries in vue javascript app. modify "pages/admin.vue" and "server/api" as needed. give me only complete correct modified vuesjs javascript code

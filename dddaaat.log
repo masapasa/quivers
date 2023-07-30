@@ -1,0 +1,235 @@
+"backend/routes/brain_routes.py" ```import os
+import time
+from typing import Optional
+from uuid import UUID
+
+from auth.auth_bearer import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, Request
+from logger import get_logger
+from models.brains import Brain
+from models.settings import CommonsDep, common_dependencies
+from models.users import User
+from pydantic import BaseModel
+from utils.users import fetch_user_id_from_credentials
+
+logger = get_logger(__name__)
+
+brain_router = APIRouter()
+
+
+class BrainToUpdate(BaseModel):
+    brain_id: UUID
+    name: Optional[str] = "New Brain"
+    status: Optional[str] = "public"
+    model: Optional[str] = "gpt-3.5-turbo-0613"
+    temperature: Optional[float] = 0.0
+    max_tokens: Optional[int] = 256
+    file_sha1: Optional[str] = ""
+@brain_router.get("/brains", dependencies=[Depends(AuthBearer())], tags=["Brain"])
+async def brain_endpoint(current_user: User = Depends(get_current_user)):
+    commons = common_dependencies()
+    brain = Brain()
+    user_id = fetch_user_id_from_credentials(commons, {"email": current_user.email})
+    brains = brain.get_user_brains(user_id)
+    return {"brains": brains}
+@brain_router.get(
+    "/brains/{brain_id}", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def brain_endpoint(brain_id: UUID):
+    brain = Brain(brain_id=brain_id)
+    brains = brain.get_brain_details()
+    if len(brains) > 0:
+        return {
+            "brainId": brain_id,
+            "brainName": brains[0]["name"],
+            "status": brains[0]["status"],
+        }
+    else:
+        return {"error": f"No brain found with brain_id {brain_id}"}
+@brain_router.delete(
+    "/brains/{brain_id}", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def brain_endpoint(brain_id: UUID):
+    brain = Brain(brain_id=brain_id)
+    brain.delete_brain()
+    return {"message": f"{brain_id}  has been deleted."}
+class BrainObject(BaseModel):
+    brain_id: Optional[UUID]
+    name: Optional[str] = "New Brain"
+    status: Optional[str] = "public"
+    model: Optional[str] = "gpt-3.5-turbo-0613"
+    temperature: Optional[float] = 0.0
+    max_tokens: Optional[int] = 256
+    file_sha1: Optional[str] = ""
+@brain_router.post("/brains", dependencies=[Depends(AuthBearer())], tags=["Brain"])
+async def brain_endpoint(
+    request: Request,
+    brain: BrainObject,
+    current_user: User = Depends(get_current_user),
+):
+    commons = common_dependencies()
+    brain = Brain(name=brain.name)
+    user_id = fetch_user_id_from_credentials(commons, {"email": current_user.email})
+    created_brain = brain.create_brain(brain.name)[0]
+    # create a brain X user entry
+    brain.create_brain_user(created_brain["brain_id"], user_id, rights="Owner")
+
+    return {"id": created_brain["brain_id"], "name": created_brain["name"]}
+@brain_router.put(
+    "/brains/{brain_id}", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def brain_endpoint(
+    request: Request,
+    brain_id: UUID,
+    input_brain: Brain,
+    fileName: Optional[str],
+    current_user: User = Depends(get_current_user),
+):
+    commons = common_dependencies()
+    brain = Brain(brain_id=brain_id)
+    if brain.file_sha1:
+        brain.update_brain_with_file(file_sha1=input_brain.file_sha1)
+        print("brain:", brain)
+
+    brain.update_brain_fields(commons, brain)
+    return {"message": f"Brain {brain_id} has been updated."}``` "backend/models/brains.py" ```from typing import List, Optional, Tuple
+from uuid import UUID
+
+from models.settings import CommonsDep, common_dependencies
+from pydantic import BaseModel
+
+
+class Brain(BaseModel):
+    brain_id: Optional[UUID]
+    name: Optional[str] = "New Brain"
+    status: Optional[str] = "public"
+    model: Optional[str] = "gpt-3.5-turbo-0613"
+    temperature: Optional[float] = 0.0
+    max_tokens: Optional[int] = 256
+    file_sha1: Optional[str] = ""
+    _commons: Optional[CommonsDep] = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    @property
+    def commons(self) -> CommonsDep:
+        if not self._commons:
+            self.__class__._commons = common_dependencies()
+        return self._commons
+
+    @classmethod
+    def create(cls, *args, **kwargs):
+        commons = common_dependencies()
+        return cls(commons=commons, *args, **kwargs)
+
+    def get_user_brains(self, user_id):
+        response = (
+            self.commons["supabase"]
+            .from_("brains_users")
+            .select("id:brain_id, brains (id: brain_id, name)")
+            .filter("user_id", "eq", user_id)
+            .execute()
+        )
+        return [item["brains"] for item in response.data]
+
+    def get_brain(self):
+        response = (
+            self.commons["supabase"]
+            .from_("brains")
+            .select("brainId:brain_id, brainName:brain_name")
+            .filter("brain_id", "eq", self.brain_id)
+            .execute()
+        )
+        return response.data
+
+    def get_brain_details(self):
+        response = (
+            self.commons["supabase"]
+            .from_("brains")
+            .select("id:brain_id, name, *")
+            .filter("brain_id", "eq", self.brain_id)
+            .execute()
+        )
+        return response.data
+
+    def delete_brain(self):
+        self.commons["supabase"].table("brains").delete().match(
+            {"brain_id": self.brain_id}
+        ).execute()
+
+    @classmethod
+    def create_brain(cls, name):
+        commons = common_dependencies()
+        response = commons["supabase"].table("brains").insert({"name": name}).execute()
+        return response.data
+
+    def create_brain_user(self, brain_id, user_id, rights):
+        response = (
+            self.commons["supabase"]
+            .table("brains_users")
+            .insert({"brain_id": brain_id, "user_id": user_id, "rights": rights})
+            .execute()
+        )
+        return response.data
+
+    def create_brain_vector(self, vector_id):
+        response = (
+            self.commons["supabase"]
+            .table("brains_users")
+            .insert({"brain_id": self.brain_id, "vector_id": vector_id})
+            .execute()
+        )
+        return response.data
+
+    def get_vector_ids_from_file_sha1(self, file_sha1: str):
+        vectorsResponse = (
+            self.commons["supabase"]
+            .table("vectors")
+            .select("id")
+            .filter("metadata->>file_sha1", "eq", file_sha1)
+            .execute()
+        )
+        return vectorsResponse.data
+
+    def update_brain_fields(self):
+        self.commons["supabase"].table("brains").update({"name": self.name}).match(
+            {"brain_id": self.brain_id}
+        ).execute()
+
+    def update_brain_with_file(self, file_sha1: str):
+        vector_ids = self.get_vector_ids_from_file_sha1(file_sha1)
+        for vector_id in vector_ids:
+            self.create_brain_vector(vector_id)```"backend/utils/users.py" ```import time
+
+from logger import get_logger
+from models.settings import CommonsDep
+from models.users import User
+
+logger = get_logger(__name__)
+
+def create_user(commons: CommonsDep, email, date):
+    logger.info(f"New user entry in db document for user {email}")
+
+    return(commons['supabase'].table("users").insert(
+        {"email": email, "date": date, "requests_count": 1}).execute())
+
+def update_user_request_count(commons: CommonsDep, email, date, requests_count):
+    logger.info(f"User {email} request count updated to {requests_count}")
+    commons['supabase'].table("users").update(
+        { "requests_count": requests_count}).match({"email": email, "date": date}).execute()
+def fetch_user_id_from_credentials(commons: CommonsDep, credentials):
+    user = User(email=credentials.get('email', 'none'))
+    response = commons['supabase'].from_('users').select('id').filter("email", "eq", user.email).execute()
+
+    userItem = next(iter(response.data or []), {})
+
+    if userItem == {}: 
+        date = time.strftime("%Y%m%d")
+        create_user_response = create_user(commons, email= user.email, date=date)
+        user_id = create_user_response.data[0]['id']
+
+    else: 
+        user_id = userItem['id']
+
+    return user_id```. this is the fastapi python backend for /chat route. identify the error in fastapi backend or nextjs frontend and give me correct complete modified code based on the code provided

@@ -1,0 +1,256 @@
+".aws/task_definition.json" ```{
+    "taskDefinitionArn": "arn:aws:ecs:eu-west-3:779061781029:task-definition/quivr:1",
+    "containerDefinitions": [
+        {
+            "name": "quivr",
+            "image": "779061781029.dkr.ecr.eu-west-1.amazonaws.com/quivr:latest",
+            "cpu": 512,
+            "memory": 1024,
+            "portMappings": [
+                {
+                    "name": "quivr-5050-tcp",
+                    "containerPort": 5050,
+                    "hostPort": 5050,
+                    "protocol": "tcp",
+                    "appProtocol": "http"
+                }
+            ],
+            "essential": true,
+            "environment": [],
+            "environmentFiles": [
+                {
+                    "value": "arn:aws:s3:::quivr-envs-variables/production.env",
+                    "type": "s3"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-create-group": "true",
+                    "awslogs-group": "/ecs/quivr",
+                    "awslogs-region": "eu-west-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            }
+        }
+    ],
+    "family": "quivr",
+    "taskRoleArn": "arn:aws:iam::779061781029:role/ecsTaskExecutionRole",
+    "executionRoleArn": "arn:aws:iam::779061781029:role/ecsTaskExecutionRole",
+    "networkMode": "awsvpc",
+    "revision": 84,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "ecs.capability.env-files.s3"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.29"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "FARGATE"
+    ],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "512",
+    "memory": "1024",
+    "runtimePlatform": {
+        "cpuArchitecture": "X86_64",
+        "operatingSystemFamily": "LINUX"
+    },
+    "registeredAt": "2023-06-17T11:29:20.398Z",
+    "registeredBy": "arn:aws:iam::779061781029:root",
+    "tags": []
+}``` ".github/workflows/aws.yml" ```name: Deploy to Amazon ECS
+
+on:  
+  push:
+    branches: [ "masa" ]
+    tags:
+      - 'v*'
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REPOSITORY: quivr
+  ECS_SERVICE: quivr-backend
+  ECS_CLUSTER: quivr
+  ECS_TASK_DEFINITION: .aws/task_definition.json 
+  CONTAINER_NAME: quivr
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    environment: production
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        echo "Building image..."
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ env.ECS_TASK_DEFINITION }}
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true```"backend/Dockerfile" ```FROM python:3.11-bullseye
+
+RUN apt-get update && apt-get install -y libgeos-dev
+
+WORKDIR /code
+
+COPY ./requirements.txt /code/requirements.txt
+
+RUN pip install --no-cache-dir -r /code/requirements.txt --timeout 100
+
+COPY ./scripts/start.sh /code/scripts/start.sh
+RUN chmod +x /code/scripts/start.sh
+
+COPY . /code/
+
+ENTRYPOINT ["/code/scripts/start.sh"]```"frontend/Dockerfile" ```FROM node:18-alpine
+
+RUN apk add --update --no-cache python3 make g++ && ln -sf python3 /usr/bin/python
+RUN python3 -m ensurepip
+RUN pip3 install --no-cache --upgrade pip setuptools
+
+RUN mkdir -p /app
+
+WORKDIR /app
+
+COPY package*.json yarn.lock ./
+
+RUN yarn install
+
+COPY . .
+
+RUN yarn build
+
+EXPOSE 3000
+
+CMD ["yarn", "start"]```"docker-compose.yml" ```version: "3"
+
+services:
+  frontend:
+    env_file:
+      - ./frontend/.env
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    container_name: web
+    restart: always
+    ports:
+      - 3000:3000
+  backend:
+    env_file:
+      - ./backend/.env
+    build:
+      context: backend
+      dockerfile: Dockerfile
+    container_name: backend
+    restart: always
+    volumes:
+      - ./backend/:/code/
+      - ~/.config/gcloud:/root/.config/gcloud
+    ports:
+      - 5050:5050```"ECS-Console-V2-Service-quivr-backend-quivr-5d7b4c58	
+DELETE_COMPLETE
+-
+ 19:29:08 	ECS-Console-V2-Service-quivr-backend-quivr-5d7b4c58	
+DELETE_IN_PROGRESS
+User Initiated
+ 19:17:36 	ECS-Console-V2-Service-quivr-backend-quivr-5d7b4c58	
+ROLLBACK_COMPLETE
+-
+ 19:17:35 	ECSService	
+DELETE_COMPLETE
+-
+ 19:16:43 	ECSService	
+DELETE_IN_PROGRESS
+-
+ 19:16:41 	ECS-Console-V2-Service-quivr-backend-quivr-5d7b4c58	
+ROLLBACK_IN_PROGRESS
+The following resource(s) failed to create: [ECSService]. Rollback requested by user.
+ 19:16:41 	ECSService	
+CREATE_FAILED
+Resource handler returned message: "Error occurred during operation 'ECS Deployment Circuit Breaker was triggered'." (RequestToken: e146ffae-2632-b609-2786-0efb15e119f1, HandlerErrorCode: GeneralServiceException)
+ 19:06:33 	ECSService	
+CREATE_IN_PROGRESS
+Resource creation Initiated
+ 19:06:31 	ECSService	
+CREATE_IN_PROGRESS
+-
+ 19:06:28 	ECS-Console-V2-Service-quivr-backend-quivr-5d7b4c58	
+CREATE_IN_PROGRESS
+User Initiated". this is the error that i get in the aws console when i try to create "quivr-backend" service in quivr cluster. "Error: arn:aws:ecs:eu-west-1:***:service/quivr-backend is MISSING". this is the erro i get in github action console. identify the error and give me complete correct modified code

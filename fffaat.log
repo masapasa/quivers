@@ -1,0 +1,754 @@
+"/quivr/frontend/app/explore/page.tsx" ```"use client";
+import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
+
+import Button from "@/lib/components/ui/Button";
+import Spinner from "@/lib/components/ui/Spinner";
+import { useBrainContext } from "@/lib/context/BrainProvider/hooks/useBrainContext";
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { redirectToLogin } from "@/lib/router/redirectToLogin";
+
+import DocumentItem from "./DocumentItem";
+import { useExplore } from "./hooks/useExplore";
+
+const ExplorePage = (): JSX.Element => {
+  const { session } = useSupabase();
+  const { documents, setDocuments, isPending } = useExplore();
+  const { currentBrain } = useBrainContext();
+  if (session === null) {
+    redirectToLogin();
+  }
+  if (currentBrain === undefined) {
+    return (
+      <div className="flex flex-col items-center justify-center mt-10 gap-1">
+        <p className="text-center">
+          {"You need to select a brain first. 🧠💡🥲"}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <main>
+      <section className="w-full outline-none pt-10 flex flex-col gap-5 items-center justify-center p-6">
+        <div className="flex flex-col items-center justify-center">
+          <h1 className="text-3xl font-bold text-center">
+            Explore uploaded data in {currentBrain.name}
+          </h1>
+          <h2 className="opacity-50">
+            View or delete stored data used by your brain
+          </h2>
+        </div>
+        {isPending ? (
+          <Spinner />
+        ) : (
+          <motion.div layout className="w-full max-w-xl flex flex-col gap-5">
+            {documents.length !== 0 ? (
+              <AnimatePresence mode="popLayout">
+                {documents.map((document) => (
+                  <DocumentItem
+                    key={document.name}
+                    document={document}
+                    setDocuments={setDocuments}
+                  />
+                ))}
+              </AnimatePresence>
+            ) : (
+              <div className="flex flex-col items-center justify-center mt-10 gap-1">
+                <p className="text-center">Oh No, Your Brain is empty.</p>
+                <Link href="/upload">
+                  <Button>Upload</Button>
+                </Link>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </section>
+    </main>
+  );
+};
+
+export default ExplorePage;
+```
+"/quivr/frontend/app/explore/hooks/useExplore.ts" ```import { UUID } from "crypto";
+import { useEffect, useState } from "react";
+
+import { useBrainApi } from "@/lib/api/brain/useBrainApi";
+import { useBrainContext } from "@/lib/context/BrainProvider/hooks/useBrainContext";
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useAxios } from "@/lib/hooks";
+import { Document } from "@/lib/types/Document";
+
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export const useExplore = () => {
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [isPending, setIsPending] = useState(true);
+  const { session } = useSupabase();
+  const { axiosInstance } = useAxios();
+  const { currentBrainId } = useBrainContext();
+  const { getBrainDocuments } = useBrainApi();
+
+  useEffect(() => {
+    const fetchDocuments = async (brainId: UUID | null) => {
+      setIsPending(true);
+      try {
+        if (brainId === null) {
+          throw new Error("Brain id not found");
+        }
+        const brainDocuments = await getBrainDocuments(brainId);
+        setDocuments(brainDocuments);
+      } catch (error) {
+        console.error("Error fetching documents", error);
+        setDocuments([]);
+      }
+      setIsPending(false);
+    };
+    void fetchDocuments(currentBrainId);
+  }, [session?.access_token, axiosInstance, currentBrainId]);
+
+  return {
+    isPending,
+    documents,
+    setDocuments,
+  };
+};
+```
+"/quivr/frontend/app/explore/DocumentItem/index.tsx" ```/* eslint-disable */
+"use client";
+import {
+  Dispatch,
+  forwardRef,
+  RefObject,
+  SetStateAction,
+  useState,
+} from "react";
+
+import Button from "@/lib/components/ui/Button";
+import { AnimatedCard } from "@/lib/components/ui/Card";
+import Ellipsis from "@/lib/components/ui/Ellipsis";
+import { Modal } from "@/lib/components/ui/Modal";
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useAxios, useToast } from "@/lib/hooks";
+import { Document } from "@/lib/types/Document";
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+
+import { useBrainContext } from "@/lib/context/BrainProvider/hooks/useBrainContext";
+import DocumentData from "./DocumentData";
+
+interface DocumentProps {
+  document: Document;
+  setDocuments: Dispatch<SetStateAction<Document[]>>;
+}
+
+const DocumentItem = forwardRef(
+  ({ document, setDocuments }: DocumentProps, forwardedRef) => {
+    const [isDeleting, setIsDeleting] = useState(false);
+    const { publish } = useToast();
+    const { session } = useSupabase();
+    const { axiosInstance } = useAxios();
+    const { track } = useEventTracking();
+    const { currentBrain } = useBrainContext();
+
+    const canDeleteFile = currentBrain?.role === "Owner";
+
+    if (!session) {
+      throw new Error("User session not found");
+    }
+
+    const deleteDocument = async (name: string) => {
+      setIsDeleting(true);
+      void track("DELETE_DOCUMENT");
+      try {
+        if (currentBrain?.id === undefined)
+          throw new Error("Brain id not found");
+        await axiosInstance.delete(
+          `/explore/${name}/?brain_id=${currentBrain.id}`
+        );
+        setDocuments((docs) => docs.filter((doc) => doc.name !== name)); // Optimistic update
+        publish({
+          variant: "success",
+          text: `${name} deleted from brain ${currentBrain.name}.`,
+        });
+      } catch (error) {
+        console.error(`Error deleting ${name}`, error);
+      }
+      setIsDeleting(false);
+    };
+
+    return (
+      <AnimatedCard
+        initial={{ x: -64, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 64, opacity: 0 }}
+        layout
+        ref={forwardedRef as RefObject<HTMLDivElement>}
+        className="flex flex-col sm:flex-row sm:items-center justify-between w-full p-5 gap-5"
+      >
+        <Ellipsis tooltip maxCharacters={30}>
+          {document.name}
+        </Ellipsis>
+        <div className="flex gap-2 self-end">
+          <Modal Trigger={<Button className="">View</Button>}>
+            <DocumentData documentName={document.name} />
+          </Modal>
+
+          {canDeleteFile && (
+            <Modal
+              title={"Confirm"}
+              desc={`Do you really want to delete?`}
+              Trigger={
+                <Button isLoading={isDeleting} variant={"danger"} className="">
+                  Delete
+                </Button>
+              }
+              CloseTrigger={
+                <Button
+                  variant={"danger"}
+                  isLoading={isDeleting}
+                  onClick={() => {
+                    deleteDocument(document.name);
+                  }}
+                  className="self-end"
+                >
+                  Delete forever
+                </Button>
+              }
+            >
+              <p>{document.name}</p>
+            </Modal>
+          )}
+        </div>
+      </AnimatedCard>
+    );
+  }
+);
+
+DocumentItem.displayName = "DocumentItem";
+export default DocumentItem;
+```
+"/quivr/frontend/app/explore/DocumentItem/DocumentData.tsx" ```/* eslint-disable */
+import { useEffect, useState } from "react";
+
+import { useAxios } from "@/lib/hooks";
+
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+import { useSupabase } from "../../../lib/context/SupabaseProvider";
+
+interface DocumentDataProps {
+  documentName: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DocumentDetails = any;
+//TODO: review this component logic, types and purposes
+
+const DocumentData = ({ documentName }: DocumentDataProps): JSX.Element => {
+  const { session } = useSupabase();
+  const { axiosInstance } = useAxios();
+  const { track } = useEventTracking();
+
+  const [documents, setDocuments] = useState<DocumentDetails[]>([]);
+
+  if (!session) {
+    throw new Error("User session not found");
+  }
+
+  useEffect(() => {
+    const fetchDocuments = async () => {
+      void track("GET_DOCUMENT_DETAILS");
+      const res = await axiosInstance.get<{ documents: DocumentDetails[] }>(
+        `/explore/${documentName}/`
+      );
+      setDocuments(res.data.documents);
+    };
+    fetchDocuments();
+  }, [axiosInstance, documentName]);
+
+  return (
+    <div className="prose dark:prose-invert">
+      <h1 className="text-bold text-3xl break-words">{documentName}</h1>
+      <p>No. of chunks: {documents.length}</p>
+
+      <div className="flex flex-col">
+        {documents[0] &&
+          Object.keys(documents[0]).map((doc) => {
+            return (
+              <div className="grid grid-cols-2 py-2 border-b" key={doc}>
+                <p className="capitalize font-bold break-words">
+                  {doc.replaceAll("_", " ")}
+                </p>
+                <span className="break-words my-auto">
+                  {JSON.stringify(documents[0][doc]) || "Not Available"}
+                </span>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+};
+
+export default DocumentData;
+``` "/quivr/frontend/app/upload/components/Crawler/index.tsx" ```"use client";
+import Button from "@/lib/components/ui/Button";
+import Card from "@/lib/components/ui/Card";
+import Field from "@/lib/components/ui/Field";
+import { useBrainContext } from "@/lib/context/BrainProvider/hooks/useBrainContext";
+
+import { useCrawler } from "./hooks/useCrawler";
+
+export const Crawler = (): JSX.Element => {
+  const { urlInputRef, isCrawling, crawlWebsite } = useCrawler();
+  const { currentBrain } = useBrainContext();
+
+  return (
+    <div className="w-full">
+      <div className="flex justify-center gap-5 px-6">
+        <div className="max-w-xl w-full">
+          <div className="flex-col justify-center gap-5">
+            <Card className="h-32 flex gap-5 justify-center items-center px-5">
+              <div className="text-center max-w-sm w-full flex flex-col gap-5 items-center">
+                <Field
+                  name="crawlurl"
+                  ref={urlInputRef}
+                  type="text"
+                  placeholder="Enter a website URL"
+                  className="w-full"
+                />
+              </div>
+              <div className="flex flex-col items-center justify-center gap-5">
+                <Button
+                  isLoading={isCrawling}
+                  onClick={() => void crawlWebsite(currentBrain?.id)}
+                >
+                  Crawl
+                </Button>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+"/quivr/frontend/app/upload/components/Crawler/hooks/useCrawler.ts" ```/* eslint-disable */
+import { useCallback, useRef, useState } from "react";
+
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useAxios, useToast } from "@/lib/hooks";
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+
+import { redirectToLogin } from "@/lib/router/redirectToLogin";
+import { UUID } from "crypto";
+import { isValidUrl } from "../helpers/isValidUrl";
+
+export const useCrawler = () => {
+  const [isCrawling, setCrawling] = useState(false);
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
+  const { session } = useSupabase();
+  const { publish } = useToast();
+  const { axiosInstance } = useAxios();
+  const { track } = useEventTracking();
+
+  if (session === null) {
+    redirectToLogin();
+  }
+
+  const crawlWebsite = useCallback(
+    async (brainId: UUID | undefined) => {
+      // Validate URL
+      const url = urlInputRef.current ? urlInputRef.current.value : null;
+
+      if (!url || !isValidUrl(url)) {
+        void track("URL_INVALID");
+
+        publish({
+          variant: "danger",
+          text: "Invalid URL",
+        });
+
+        return;
+      }
+
+      // Configure parameters
+      const config = {
+        url: url,
+        js: false,
+        depth: 1,
+        max_pages: 100,
+        max_time: 60,
+      };
+
+      setCrawling(true);
+      void track("URL_CRAWLED");
+
+      try {
+        console.log("Crawling website...", brainId);
+        if (brainId !== undefined) {
+          const response = await axiosInstance.post(
+            `/crawl?brain_id=${brainId}`,
+            config
+          );
+
+          publish({
+            variant: response.data.type,
+            text: response.data.message,
+          });
+        }
+      } catch (error: unknown) {
+        publish({
+          variant: "danger",
+          text: "Failed to crawl website: " + JSON.stringify(error),
+        });
+      } finally {
+        setCrawling(false);
+      }
+    },
+    [session.access_token, publish]
+  );
+
+  return {
+    isCrawling,
+    urlInputRef,
+
+    crawlWebsite,
+  };
+};
+```
+"/quivr/frontend/app/upload/components/Crawler/helpers/isValidUrl.ts" ```export const isValidUrl = (string: string): boolean => {
+  try {
+    new URL(string);
+
+    return true;
+  } catch (_) {
+    return false;
+  }
+};
+```
+"/quivr/frontend/app/upload/components/FileUploader/index.tsx" ```"use client";
+import { AnimatePresence } from "framer-motion";
+
+import Button from "@/lib/components/ui/Button";
+import Card from "@/lib/components/ui/Card";
+
+import FileComponent from "./components/FileComponent";
+import { useFileUploader } from "./hooks/useFileUploader";
+
+export const FileUploader = (): JSX.Element => {
+  const {
+    getInputProps,
+    getRootProps,
+    isDragActive,
+    isPending,
+    open,
+    uploadAllFiles,
+    files,
+    setFiles,
+  } = useFileUploader();
+
+  return (
+    <section
+      {...getRootProps()}
+      className="w-full outline-none flex flex-col gap-10 items-center justify-center px-6 py-3"
+    >
+      <div className="flex flex-col sm:flex-row max-w-3xl w-full items-center gap-5">
+        <div className="flex-1 w-full">
+          <Card className="h-52 flex justify-center items-center">
+            <input {...getInputProps()} />
+            <div className="text-center p-6 max-w-sm w-full flex flex-col gap-5 items-center">
+              {isDragActive ? (
+                <p className="text-blue-600">Drop the files here...</p>
+              ) : (
+                <button
+                  onClick={open}
+                  className="opacity-50 h-full cursor-pointer hover:opacity-100 hover:underline transition-opacity"
+                >
+                  Drag and drop files here, or click to browse files to ask
+                </button>
+              )}
+            </div>
+          </Card>
+        </div>
+
+        {files.length > 0 && (
+          <div className="flex-1 w-full">
+            <Card className="h-52 py-3 overflow-y-auto">
+              {files.length > 0 ? (
+                <AnimatePresence mode="popLayout">
+                  {files.map((file) => (
+                    <FileComponent
+                      key={`${file.name} ${file.size}`}
+                      file={file}
+                      setFiles={setFiles}
+                    />
+                  ))}
+                </AnimatePresence>
+              ) : null}
+            </Card>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col items-center justify-center">
+        <Button isLoading={isPending} onClick={() => void uploadAllFiles()}>
+          {isPending ? "Uploading..." : "Upload"}
+        </Button>
+      </div>
+    </section>
+  );
+};
+```
+"/quivr/frontend/app/upload/components/FileUploader/components/FileComponent.tsx" ```/* eslint-disable */
+import { motion } from "framer-motion";
+import { Dispatch, forwardRef, RefObject, SetStateAction } from "react";
+import { MdClose } from "react-icons/md";
+
+interface FileComponentProps {
+  file: File;
+  setFiles: Dispatch<SetStateAction<File[]>>;
+}
+
+const FileComponent = forwardRef(
+  ({ file, setFiles }: FileComponentProps, forwardedRef) => {
+    return (
+      <motion.div
+        initial={{ x: "-10%", opacity: 0 }}
+        animate={{ x: "0%", opacity: 1 }}
+        exit={{ x: "10%", opacity: 0 }}
+        layout
+        ref={forwardedRef as RefObject<HTMLDivElement>}
+        className="relative flex flex-row gap-1 py-2 dark:bg-black border-b last:border-none border-black/10 dark:border-white/25 leading-none px-6 overflow-hidden"
+      >
+        <div className="flex flex-1">
+          <div className="flex flex-col">
+            <span className="overflow-ellipsis overflow-hidden whitespace-nowrap">
+              {file.name}
+            </span>
+            <span className="text-xs opacity-50 overflow-hidden text-ellipsis">
+              {(file.size / 1000).toFixed(3)} kb
+            </span>
+          </div>
+        </div>
+        <button
+          role="remove file"
+          className="text-xl text-red-500 text-ellipsis absolute top-0 h-full right-0 flex items-center justify-center bg-white dark:bg-black p-3 shadow-md aspect-square"
+          onClick={() =>
+            setFiles((files) => files.filter((f) => f.name !== file.name))
+          }
+        >
+          <MdClose />
+        </button>
+      </motion.div>
+    );
+  }
+);
+
+FileComponent.displayName = "FileComponent";
+
+export default FileComponent;
+```
+"/quivr/frontend/app/upload/components/FileUploader/hooks/useFileUploader.ts" ```/* eslint-disable */
+import { useCallback, useState } from "react";
+import { FileRejection, useDropzone } from "react-dropzone";
+
+import { useBrainContext } from "@/lib/context/BrainProvider/hooks/useBrainContext";
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useAxios, useToast } from "@/lib/hooks";
+import { redirectToLogin } from "@/lib/router/redirectToLogin";
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+import axios from "axios";
+import { UUID } from "crypto";
+
+export const useFileUploader = () => {
+  const { track } = useEventTracking();
+  const [isPending, setIsPending] = useState(false);
+  const { publish } = useToast();
+  const [files, setFiles] = useState<File[]>([]);
+  const { session } = useSupabase();
+
+  const { currentBrain } = useBrainContext();
+  const { axiosInstance } = useAxios();
+
+  if (session === null) {
+    redirectToLogin();
+  }
+
+  const upload = useCallback(
+    async (file: File, brainId: UUID) => {
+      const formData = new FormData();
+      formData.append("uploadFile", file);
+      try {
+        void track("FILE_UPLOADED");
+        const response = await axiosInstance.post(
+          `/upload?brain_id=${brainId}`,
+          formData
+        );
+        track("FILE_UPLOADED");
+        publish({
+          variant: response.data.type,
+          text:
+            (response.data.type === "success"
+              ? "File uploaded successfully: "
+              : "") + JSON.stringify(response.data.message),
+        });
+      } catch (e: unknown) {
+        if (axios.isAxiosError(e) && e.response?.status === 403) {
+          publish({
+            variant: "danger",
+            text: `${JSON.stringify(
+              (
+                e.response as {
+                  data: { detail: string };
+                }
+              ).data.detail
+            )}`,
+          });
+        } else {
+          publish({
+            variant: "danger",
+            text: "Failed to upload file: " + JSON.stringify(e),
+          });
+        }
+      }
+    },
+    [session.access_token, publish]
+  );
+
+  const onDrop = (acceptedFiles: File[], fileRejections: FileRejection[]) => {
+    if (fileRejections.length > 0) {
+      publish({ variant: "danger", text: "File too big." });
+
+      return;
+    }
+
+    for (let i = 0; i < acceptedFiles.length; i++) {
+      const file = acceptedFiles[i];
+      const isAlreadyInFiles =
+        files.filter((f) => f.name === file.name && f.size === file.size)
+          .length > 0;
+      if (isAlreadyInFiles) {
+        publish({
+          variant: "warning",
+          text: `${file.name} was already added`,
+        });
+        acceptedFiles.splice(i, 1);
+      }
+    }
+    setFiles((files) => [...files, ...acceptedFiles]);
+  };
+
+  const uploadAllFiles = async () => {
+    if (files.length === 0) {
+      publish({
+        text: "Please, add files to upload",
+        variant: "warning",
+      });
+
+      return;
+    }
+    setIsPending(true);
+    if (currentBrain?.id !== undefined) {
+      await Promise.all(files.map((file) => upload(file, currentBrain?.id)));
+      setFiles([]);
+    } else {
+      publish({
+        text: "Please, select or create a brain to upload a file",
+        variant: "warning",
+      });
+    }
+    setIsPending(false);
+  };
+
+  const { getInputProps, getRootProps, isDragActive, open } = useDropzone({
+    onDrop,
+    noClick: true,
+    maxSize: 100000000, // 1 MB
+  });
+
+  return {
+    isPending,
+    getInputProps,
+    getRootProps,
+    isDragActive,
+    open,
+    uploadAllFiles,
+
+    files,
+    setFiles,
+  };
+};
+``` "/quivr/frontend/app/upload/page.tsx" ```"use client";
+import Link from "next/link";
+
+import { BrainRoleType } from "@/lib/components/NavBar/components/NavItems/components/BrainsDropDown/components/BrainActions/types";
+import Button from "@/lib/components/ui/Button";
+import { Divider } from "@/lib/components/ui/Divider";
+import PageHeading from "@/lib/components/ui/PageHeading";
+import { useBrainContext } from "@/lib/context/BrainProvider/hooks/useBrainContext";
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { redirectToLogin } from "@/lib/router/redirectToLogin";
+
+import { Crawler } from "./components/Crawler";
+import { FileUploader } from "./components/FileUploader";
+
+const requiredRolesForUpload: BrainRoleType[] = ["Editor", "Owner"];
+
+const UploadPage = (): JSX.Element => {
+  const { currentBrain } = useBrainContext();
+  const { session } = useSupabase();
+
+  if (session === null) {
+    redirectToLogin();
+  }
+
+  if (currentBrain === undefined) {
+    return (
+      <div className="flex justify-center items-center mt-5">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative max-w-md">
+          <strong className="font-bold mr-1">Oh no!</strong>
+          <span className="block sm:inline">
+            {"You need to select a brain first. 🧠💡🥲"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const hasUploadRights = requiredRolesForUpload.includes(currentBrain.role);
+
+  if (!hasUploadRights) {
+    return (
+      <div className="flex justify-center items-center mt-5">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative max-w-md">
+          <strong className="font-bold mr-1">Oh no!</strong>
+          <span className="block sm:inline">
+            {
+              "You don't have the necessary role to upload content to the selected brain. 🧠💡🥲"
+            }
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <main className="pt-10">
+      <PageHeading
+        title={`Upload Knowledge to ${currentBrain.name}`}
+        subtitle="Text, document, spreadsheet, presentation, audio, video, and URLs supported"
+      />
+      <FileUploader />
+      <Divider text="or" className="m-5" />
+      <Crawler />
+      <div className="flex flex-col items-center justify-center gap-5 mt-5">
+        <Link href={"/chat"}>
+          <Button variant={"secondary"} className="py-3">
+            Chat
+          </Button>
+        </Link>
+      </div>
+    </main>
+  );
+};
+
+export default UploadPage;```. these are the upload and explore routes in the nextjs javascript frontend. what do i need to change to integrate the stripe payment that we implemented in the fastapi python backend and already updated the login and signup process? also implement payment processing using Stripe in the handleSignUp function of the useSignUp hook and on the /signup page. give me only complete correct modified nextjs javascript code to itegrate stripe payment that we already implemented

@@ -1,0 +1,133 @@
+Sure! Here's a step-by-step guide on how to load task definitions to an AWS ECS cluster:\n\n1. First, make sure that you have your task definition file ready. This file should be in JSON format and should contain information about your task, including the Docker image, memory and CPU requirements, ports, and any additional configuration details.\n\n2. Go to the ECS console in your AWS account and select your cluster. You should see a navigation pane on the left-hand side.\n\n3. In the navigation pane, select \"Task Definitions\" and then click \"Create new Task Definition\". Select \"Fargate\" as the launch type compatibility.\n\n4. You will now be prompted to configure your task definition. In the first step, enter a name and description for your task and select the appropriate Task Role. \n\n5. In the \"Task execution IAM role\" section, create a new task execution IAM role. \n\n6. In the \"Task Size\" section, select the appropriate Task Memory and Task CPU.\n\n7. In the \"Container Definitions\" section, click \"Add container\" and enter the container name, image, and port mappings for the container. \n\n8. Once you have completed all steps, click \"Create\".\n\n9. Once the task definition has been created successfully, go back to the cluster overview page and click \"Tasks\".\n\n10. Click the \"Run new task\" button and select the newly created task definition.\n\n11. In the \"Configure task and run\" panel, select the desired launch type and desired number of tasks to run. Configure any additional settings as necessary.\n\n12. Click \"Run Task\". Your task should now be running on the selected cluster.\n\nCongratulations, you have successfully loaded a task definition to your AWS ECS cluster!
+server {
+    listen 80;
+    server_name 3.69.170.96;
+    location / {
+        proxy_pass http://127.0.0.1:5050;
+    }
+}
+"backend/utils/vectors.py" ```from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.schema import Document
+from llm.brainpicking import BrainPicking, BrainSettings
+from llm.summarization import llm_evaluate_summaries, llm_summerize
+from logger import get_logger
+from models.chats import ChatMessage
+from models.settings import BrainSettings, CommonsDep
+from pydantic import BaseModel
+
+logger = get_logger(__name__)
+
+class Neurons(BaseModel):
+
+    commons: CommonsDep
+    settings = BrainSettings()
+    
+    def create_vector(self, client, user_id, doc, user_openai_api_key=None):
+        logger.info(f"Creating vector for document")
+        logger.info(f"Document: {doc}")
+        if user_openai_api_key:
+            self.commons['documents_vector_store']._embedding = OpenAIEmbeddings(openai_api_key=user_openai_api_key)
+        try:
+            sids = self.commons['documents_vector_store'].add_documents([doc])
+            if sids and len(sids) > 0:
+                client.table("vectors").update({"user_id": user_id}).match({"id": sids[0]}).execute()
+        except Exception as e:
+            logger.error(f"Error creating vector for document {e}")
+
+    def create_embedding(self, content):
+        return self.commons['embeddings'].embed_query(content)
+
+    def similarity_search(self, query, table='match_summaries', top_k=5, threshold=0.5):
+        query_embedding = self.create_embedding(query)
+        summaries = self.commons['supabase'].rpc(
+            table, {'query_embedding': query_embedding,
+                    'match_count': top_k, 'match_threshold': threshold}
+        ).execute()
+        return summaries.data
+def create_summary(commons: CommonsDep, document_id, content, metadata):
+    logger.info(f"Summarizing document {content[:100]}")
+    summary = llm_summerize(content)
+    logger.info(f"Summary: {summary}")
+    metadata['document_id'] = document_id
+    summary_doc_with_metadata = Document(
+        page_content=summary, metadata=metadata)
+    sids = commons['summaries_vector_store'].add_documents(
+        [summary_doc_with_metadata])
+    if sids and len(sids) > 0:
+        commons['supabase'].table("summaries").update(
+            {"document_id": document_id}).match({"id": sids[0]}).execute()```"backend/llm/brainpicking.py" ```import os  # A module to interact with the OS
+from typing import Any, Dict, List
+from langchain.chains import ConversationalRetrievalChain, LLMChain
+from langchain.chains.question_answering import load_qa_chain
+from langchain.chains.router.llm_router import LLMRouterChain, RouterOutputParser
+from langchain.chains.router.multi_prompt_prompt import MULTI_PROMPT_ROUTER_TEMPLATE
+from langchain.chat_models import ChatOpenAI, ChatVertexAI
+from langchain.chat_models.anthropic import ChatAnthropic
+from langchain.docstore.document import Document
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.llms import OpenAI, VertexAI
+from langchain.memory import ConversationBufferMemory
+from langchain.vectorstores import SupabaseVectorStore
+from llm.prompt import LANGUAGE_PROMPT
+from llm.prompt.CONDENSE_PROMPT import CONDENSE_QUESTION_PROMPT
+from supabase import Client, create_client
+from models.chats import ChatMessage
+from models.settings import BrainSettings
+from pydantic import BaseModel, BaseSettings
+from vectorstore.supabase import CustomSupabaseVectorStore
+class AnswerConversationBufferMemory(ConversationBufferMemory):
+    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
+        # Overriding the save_context method of the parent class
+        return super(AnswerConversationBufferMemory, self).save_context(
+            inputs, {'response': outputs['answer']})
+
+def get_chat_history(inputs) -> str:
+    res = []
+    for human, ai in inputs:
+        res.append(f"{human}:{ai}\n")
+    return "\n".join(res)
+
+class BrainPicking(BaseModel):
+    llm_name: str = "gpt-3.5-turbo"
+    settings = BrainSettings()
+    embeddings: OpenAIEmbeddings = None
+    supabase_client: Client = None
+    vector_store: CustomSupabaseVectorStore = None
+    llm: ChatOpenAI = None
+    question_generator: LLMChain = None
+    doc_chain: ConversationalRetrievalChain = None
+
+    class Config:
+        arbitrary_types_allowed = True
+    
+    def init(self, model: str, user_id: str) -> "BrainPicking":
+        self.embeddings = OpenAIEmbeddings(openai_api_key=self.settings.openai_api_key)
+        self.supabase_client = create_client(self.settings.supabase_url, self.settings.supabase_service_key)
+        self.vector_store = CustomSupabaseVectorStore(
+            self.supabase_client, self.embeddings, table_name="vectors", user_id=user_id)
+        self.llm = ChatOpenAI(temperature=0, model_name=model)
+        self.question_generator = LLMChain(llm=self.llm, prompt=CONDENSE_QUESTION_PROMPT)
+        self.doc_chain = load_qa_chain(self.llm, chain_type="stuff")
+        return self
+    
+    def _get_qa(self, chat_message: ChatMessage, user_openai_api_key) -> ConversationalRetrievalChain:
+        if user_openai_api_key is not None and user_openai_api_key != "":
+            self.settings.openai_api_key = user_openai_api_key
+        qa = ConversationalRetrievalChain(
+                retriever=self.vector_store.as_retriever(),
+                max_tokens_limit=chat_message.max_tokens, question_generator=self.question_generator,
+                combine_docs_chain=self.doc_chain, get_chat_history=get_chat_history)
+        return qa
+
+    def generate_answer(self, chat_message: ChatMessage, user_openai_api_key) -> str:
+        transformed_history = []
+        qa = self._get_qa(chat_message, user_openai_api_key)
+        for i in range(0, len(chat_message.history) - 1, 2):
+            user_message = chat_message.history[i][1]
+            assistant_message = chat_message.history[i + 1][1]
+            transformed_history.append((user_message, assistant_message))
+        model_response = qa({"question": chat_message.question, "chat_history": transformed_history})
+        answer = model_response['answer']
+        return answer```"metadata={'file_sha1': '0131fc462cdbaf7a4637eb48538b00e466c550ee', 'file_size': 53771, 'file_name': 'codetf_5.pdf', 'chunk_size': 500, 'chunk_overlap': 0, 'date': '20230620', 'summarization': 'false'}
+2023-06-20 20:35:16,952:INFO - error_code=invalid_api_key error_message= error_param=None error_type=invalid_request_error message='OpenAI API error received' stream_error=False
+2023-06-20 20:35:16,952 [ERROR] utils.vectors: Error creating vector for document <empty message>". i still have this error. identify the error. give me complete correct modified fastapi python code to resolve this error

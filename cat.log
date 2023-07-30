@@ -1,0 +1,566 @@
+"bot/bott.py" ```import os
+import logging
+import asyncio
+import traceback
+import html
+import json
+import tempfile
+import pydub
+from pathlib import Path
+from datetime import datetime, timedelta
+import openai
+
+import telegram
+from telegram import (
+    Update,
+    User,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    BotCommand
+)
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackContext,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    AIORateLimiter,
+    filters
+)
+from telegram.constants import ParseMode, ChatAction
+
+import config
+import database
+import openai_utils
+
+db = database.Database()
+logger = logging.getLogger(__name__)
+
+user_semaphores = {}
+user_tasks = {}
+
+HELP_MESSAGE = """Commands:
+⚪ /list – List all the telegram groups/channels the user is part of.
+⚪ /summary – Provide 1 paragraph summary of the messages of the last 30 days.
+⚪ /help – Show help
+
+🎨 Generate images from text prompts in <b>👩‍🎨 Artist</b> /mode
+👥 Add bot to <b>group chat</b>: /help_group_chat
+🎤 You can send <b>Voice Messages</b> instead of text
+"""
+
+HELP_GROUP_CHAT_MESSAGE = """You can add bot to any <b>group chat</b> to help and entertain its participants!
+
+Instructions (see <b>video</b> below):
+1. Add the bot to the group chat
+2. Make it an <b>admin</b>, so that it can see messages (all other rights can be restricted)
+3. You're awesome!
+
+To get a reply from the bot in the chat – @ <b>tag</b> it or <b>reply</b> to its message.
+For example: "{bot_username} write a poem about Telegram"
+"""
+
+def split_text_into_chunks(text, chunk_size):
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i + chunk_size]
+
+async def register_user_if_not_exists(update: Update, context: CallbackContext, user: User):
+    if not db.check_if_user_exists(user.id):
+        db.add_new_user(
+            user.id,
+            update.message.chat_id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name= user.last_name
+        )
+        db.start_new_dialog(user.id)
+
+    if db.get_user_attribute(user.id, "current_dialog_id") is None:
+        db.start_new_dialog(user.id)
+
+    if user.id not in user_semaphores:
+        user_semaphores[user.id] = asyncio.Semaphore(1)
+
+    if db.get_user_attribute(user.id, "current_model") is None:
+        db.set_user_attribute(user.id, "current_model", config.models["available_text_models"][0])
+    n_used_tokens = db.get_user_attribute(user.id, "n_used_tokens")
+    if isinstance(n_used_tokens, int) or isinstance(n_used_tokens, float):
+        new_n_used_tokens = {
+            "gpt-3.5-turbo": {
+                "n_input_tokens": 0,
+                "n_output_tokens": n_used_tokens
+            }
+        }
+        db.set_user_attribute(user.id, "n_used_tokens", new_n_used_tokens)
+    if db.get_user_attribute(user.id, "n_transcribed_seconds") is None:
+        db.set_user_attribute(user.id, "n_transcribed_seconds", 0.0)
+    if db.get_user_attribute(user.id, "n_generated_images") is None:
+        db.set_user_attribute(user.id, "n_generated_images", 0)
+
+async def is_bot_mentioned(update: Update, context: CallbackContext):
+     try:
+         message = update.message
+
+         if message.chat.type == "private":
+             return True
+
+         if message.text is not None and ("@" + context.bot.username) in message.text:
+             return True
+
+         if message.reply_to_message is not None:
+             if message.reply_to_message.from_user.id == context.bot.id:
+                 return True
+     except:
+         return True
+     else:
+         return False
+
+async def start_handle(update: Update, context: CallbackContext):
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    user_id = update.message.from_user.id
+
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+    db.start_new_dialog(user_id)
+
+    reply_text = "Hi! I'm a Telegram bot that can send summaries of channels 🤖\n\n"
+    reply_text += HELP_MESSAGE
+
+    await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
+
+async def help_handle(update: Update, context: CallbackContext):
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+    await update.message.reply_text(HELP_MESSAGE, parse_mode=ParseMode.HTML)
+
+async def list_handle(update: Update, context: CallbackContext):
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+
+    chats = await context.bot.get_chats()
+    chat_list = []
+    for chat in chats:
+        chat_list.append(chat.title)
+
+    reply_text = "Here is a list of all the telegram groups/channels you are part of:\n\n"
+    for chat in chat_list:
+        reply_text += f"- {chat}\n"
+
+    await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
+
+async def summary_handle(update: Update, context: CallbackContext):
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+
+    chat_title = update.message.text.split(' ', 1)[1]
+    chats = await context.bot.get_chats()
+    chat_id = None
+    for chat in chats:
+        if chat.title == chat_title:
+            chat_id = chat.id
+            break
+
+    if not chat_id:
+        await update.message.reply_text(f"Sorry, I couldn't find a group/channel with the name '{chat_title}'.", parse_mode=ParseMode.HTML)
+        return
+
+    messages = []
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=30)
+    async for message in context.bot.iter_history(chat_id):
+        if message.date < start_date:
+            break
+        messages.append(message.text)
+
+    messages_str = ' '.join(messages)
+    prompt = f"Please summarize the following text in one paragraph: {messages_str}"
+    
+    response = openai.Completion.create(
+        engine="davinci",
+        prompt=prompt,
+        temperature=0.7,
+        max_tokens=150,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0
+    )
+
+    summary = response['choices'][0]['text']
+    
+    reply_text = f"Here is a summary of the messages from the last 30 days in the group/channel '{chat_title}':\n\n{summary}"
+    
+    await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
+
+async def post_init(application: Application):
+    await application.bot.set_my_commands([
+        BotCommand("/start", "Start new dialog"),
+        BotCommand("/help", "Select chat mode"),
+        BotCommand("/list", "Re-generate response for previous query"),
+        BotCommand("/summary", "Show balance"),
+    ])
+def run_bot() -> None:
+    application = (
+        ApplicationBuilder()
+        .token(config.telegram_token)
+        .concurrent_updates(True)
+        .rate_limiter(AIORateLimiter(max_retries=5))
+        .http_version("1.1")
+        .get_updates_http_version("1.1")
+        .post_init(post_init)
+        .build()
+    )
+    
+    user_filter = filters.ALL
+    if len(config.allowed_telegram_usernames) > 0:
+        usernames = [x for x in config.allowed_telegram_usernames if isinstance(x, str)]
+        any_ids = [x for x in config.allowed_telegram_usernames if isinstance(x, int)]
+        user_ids = [x for x in any_ids if x > 0]
+        group_ids = [x for x in any_ids if x < 0]
+        user_filter = filters.User(username=usernames) | filters.User(user_id=user_ids) | filters.Chat(chat_id=group_ids)
+
+    application.add_handler(CommandHandler("start", start_handle, filters=user_filter))
+    application.add_handler(CommandHandler("help", help_handle, filters=user_filter))
+    
+    application.add_handler(CommandHandler("list", list_handle, filters=user_filter))
+    
+    application.add_handler(CommandHandler("summary", summary_handle, filters=user_filter))
+    
+    application.run_polling()
+
+if __name__ == "__main__":
+    run_bot()
+``` "bot/database.py" ```from typing import Optional, Any
+
+import pymongo
+import uuid
+from datetime import datetime
+
+import config
+class Database:
+    def __init__(self):
+        self.client = pymongo.MongoClient(config.mongodb_uri)
+        self.db = self.client["chatgpt_telegram_bot"]
+
+        self.user_collection = self.db["user"]
+        self.dialog_collection = self.db["dialog"]
+
+    def check_if_user_exists(self, user_id: int, raise_exception: bool = False):
+        if self.user_collection.count_documents({"_id": user_id}) > 0:
+            return True
+        else:
+            if raise_exception:
+                raise ValueError(f"User {user_id} does not exist")
+            else:
+                return False
+
+    def add_new_user(
+        self,
+        user_id: int,
+        chat_id: int,
+        username: str = "",
+        first_name: str = "",
+        last_name: str = "",
+    ):
+        user_dict = {
+            "_id": user_id,
+            "chat_id": chat_id,
+
+            "username": username,
+            "first_name": first_name,
+            "last_name": last_name,
+
+            "last_interaction": datetime.now(),
+            "first_seen": datetime.now(),
+
+            "current_dialog_id": None,
+            "current_chat_mode": "assistant",
+            "current_model": config.models["available_text_models"][0],
+
+            "n_used_tokens": {},
+
+            "n_generated_images": 0,
+            "n_transcribed_seconds": 0.0
+        }
+
+        if not self.check_if_user_exists(user_id):
+            self.user_collection.insert_one(user_dict)
+
+    def start_new_dialog(self, user_id: int):
+        self.check_if_user_exists(user_id, raise_exception=True)
+
+        dialog_id = str(uuid.uuid4())
+        dialog_dict = {
+            "_id": dialog_id,
+            "user_id": user_id,
+            "chat_mode": self.get_user_attribute(user_id, "current_chat_mode"),
+            "start_time": datetime.now(),
+            "model": self.get_user_attribute(user_id, "current_model"),
+            "messages": []
+        }
+        self.dialog_collection.insert_one(dialog_dict)
+        self.user_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"current_dialog_id": dialog_id}}
+        )
+
+        return dialog_id
+
+    def get_user_attribute(self, user_id: int, key: str):
+        self.check_if_user_exists(user_id, raise_exception=True)
+        user_dict = self.user_collection.find_one({"_id": user_id})
+
+        if key not in user_dict:
+            return None
+
+        return user_dict[key]
+
+    def set_user_attribute(self, user_id: int, key: str, value: Any):
+        self.check_if_user_exists(user_id, raise_exception=True)
+        self.user_collection.update_one({"_id": user_id}, {"$set": {key: value}})
+
+    def update_n_used_tokens(self, user_id: int, model: str, n_input_tokens: int, n_output_tokens: int):
+        n_used_tokens_dict = self.get_user_attribute(user_id, "n_used_tokens")
+
+        if model in n_used_tokens_dict:
+            n_used_tokens_dict[model]["n_input_tokens"] += n_input_tokens
+            n_used_tokens_dict[model]["n_output_tokens"] += n_output_tokens
+        else:
+            n_used_tokens_dict[model] = {
+                "n_input_tokens": n_input_tokens,
+                "n_output_tokens": n_output_tokens
+            }
+
+        self.set_user_attribute(user_id, "n_used_tokens", n_used_tokens_dict)
+
+    def get_dialog_messages(self, user_id: int, dialog_id: Optional[str] = None):
+        self.check_if_user_exists(user_id, raise_exception=True)
+
+        if dialog_id is None:
+            dialog_id = self.get_user_attribute(user_id, "current_dialog_id")
+
+        dialog_dict = self.dialog_collection.find_one({"_id": dialog_id, "user_id": user_id})
+        return dialog_dict["messages"]
+
+    def set_dialog_messages(self, user_id: int, dialog_messages: list, dialog_id: Optional[str] = None):
+        self.check_if_user_exists(user_id, raise_exception=True)
+
+        if dialog_id is None:
+            dialog_id = self.get_user_attribute(user_id, "current_dialog_id")
+
+        self.dialog_collection.update_one(
+            {"_id": dialog_id, "user_id": user_id},
+            {"$set": {"messages": dialog_messages}}
+        )`` "bot/openai_utils.py" ```import config
+
+import tiktoken
+import openai
+openai.api_key = config.openai_api_key
+
+
+OPENAI_COMPLETION_OPTIONS = {
+    "temperature": 0.7,
+    "max_tokens": 1000,
+    "top_p": 1,
+    "frequency_penalty": 0,
+    "presence_penalty": 0
+}
+
+
+class ChatGPT:
+    def __init__(self, model="gpt-3.5-turbo"):
+        assert model in {"text-davinci-003", "gpt-3.5-turbo-16k", "gpt-3.5-turbo", "gpt-4"}, f"Unknown model: {model}"
+        self.model = model
+
+    async def send_message(self, message, dialog_messages=[], chat_mode="assistant"):
+        if chat_mode not in config.chat_modes.keys():
+            raise ValueError(f"Chat mode {chat_mode} is not supported")
+
+        n_dialog_messages_before = len(dialog_messages)
+        answer = None
+        while answer is None:
+            try:
+                if self.model in {"gpt-3.5-turbo-16k", "gpt-3.5-turbo", "gpt-4"}:
+                    messages = self._generate_prompt_messages(message, dialog_messages, chat_mode)
+                    r = await openai.ChatCompletion.acreate(
+                        model=self.model,
+                        messages=messages,
+                        **OPENAI_COMPLETION_OPTIONS
+                    )
+                    answer = r.choices[0].message["content"]
+                elif self.model == "text-davinci-003":
+                    prompt = self._generate_prompt(message, dialog_messages, chat_mode)
+                    r = await openai.Completion.acreate(
+                        engine=self.model,
+                        prompt=prompt,
+                        **OPENAI_COMPLETION_OPTIONS
+                    )
+                    answer = r.choices[0].text
+                else:
+                    raise ValueError(f"Unknown model: {self.model}")
+
+                answer = self._postprocess_answer(answer)
+                n_input_tokens, n_output_tokens = r.usage.prompt_tokens, r.usage.completion_tokens
+            except openai.error.InvalidRequestError as e:
+                if len(dialog_messages) == 0:
+                    raise ValueError("Dialog messages is reduced to zero, but still has too many tokens to make completion") from e
+                dialog_messages = dialog_messages[1:]
+
+        n_first_dialog_messages_removed = n_dialog_messages_before - len(dialog_messages)
+
+        return answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed
+
+    async def send_message_stream(self, message, dialog_messages=[], chat_mode="assistant"):
+        if chat_mode not in config.chat_modes.keys():
+            raise ValueError(f"Chat mode {chat_mode} is not supported")
+
+        n_dialog_messages_before = len(dialog_messages)
+        answer = None
+        while answer is None:
+            try:
+                if self.model in {"gpt-3.5-turbo-16k", "gpt-3.5-turbo", "gpt-4"}:
+                    messages = self._generate_prompt_messages(message, dialog_messages, chat_mode)
+                    r_gen = await openai.ChatCompletion.acreate(
+                        model=self.model,
+                        messages=messages,
+                        stream=True,
+                        **OPENAI_COMPLETION_OPTIONS
+                    )
+
+                    answer = ""
+                    async for r_item in r_gen:
+                        delta = r_item.choices[0].delta
+                        if "content" in delta:
+                            answer += delta.content
+                            n_input_tokens, n_output_tokens = self._count_tokens_from_messages(messages, answer, model=self.model)
+                            n_first_dialog_messages_removed = n_dialog_messages_before - len(dialog_messages)
+                            yield "not_finished", answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed
+                elif self.model == "text-davinci-003":
+                    prompt = self._generate_prompt(message, dialog_messages, chat_mode)
+                    r_gen = await openai.Completion.acreate(
+                        engine=self.model,
+                        prompt=prompt,
+                        stream=True,
+                        **OPENAI_COMPLETION_OPTIONS
+                    )
+
+                    answer = ""
+                    async for r_item in r_gen:
+                        answer += r_item.choices[0].text
+                        n_input_tokens, n_output_tokens = self._count_tokens_from_prompt(prompt, answer, model=self.model)
+                        n_first_dialog_messages_removed = n_dialog_messages_before - len(dialog_messages)
+                        yield "not_finished", answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed
+
+                answer = self._postprocess_answer(answer)
+
+            except openai.error.InvalidRequestError as e:
+                if len(dialog_messages) == 0:
+                    raise e
+                dialog_messages = dialog_messages[1:]
+
+        yield "finished", answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed
+
+    def _generate_prompt(self, message, dialog_messages, chat_mode):
+        prompt = config.chat_modes[chat_mode]["prompt_start"]
+        prompt += "\n\n"
+        if len(dialog_messages) > 0:
+            prompt += "Chat:\n"
+            for dialog_message in dialog_messages:
+                prompt += f"User: {dialog_message['user']}\n"
+                prompt += f"Assistant: {dialog_message['bot']}\n"
+        prompt += f"User: {message}\n"
+        prompt += "Assistant: "
+
+        return prompt
+
+    def _generate_prompt_messages(self, message, dialog_messages, chat_mode):
+        prompt = config.chat_modes[chat_mode]["prompt_start"]
+
+        messages = [{"role": "system", "content": prompt}]
+        for dialog_message in dialog_messages:
+            messages.append({"role": "user", "content": dialog_message["user"]})
+            messages.append({"role": "assistant", "content": dialog_message["bot"]})
+        messages.append({"role": "user", "content": message})
+
+        return messages
+
+    def _postprocess_answer(self, answer):
+        answer = answer.strip()
+        return answer
+
+    def _count_tokens_from_messages(self, messages, answer, model="gpt-3.5-turbo"):
+        encoding = tiktoken.encoding_for_model(model)
+
+        if model == "gpt-3.5-turbo-16k":
+            tokens_per_message = 4
+            tokens_per_name = -1
+        elif model == "gpt-3.5-turbo":
+            tokens_per_message = 4
+            tokens_per_name = -1    
+        elif model == "gpt-4":
+            tokens_per_message = 3
+            tokens_per_name = 1
+        else:
+            raise ValueError(f"Unknown model: {model}")
+        n_input_tokens = 0
+        for message in messages:
+            n_input_tokens += tokens_per_message
+            for key, value in message.items():
+                n_input_tokens += len(encoding.encode(value))
+                if key == "name":
+                    n_input_tokens += tokens_per_name
+
+        n_input_tokens += 2
+        n_output_tokens = 1 + len(encoding.encode(answer))
+
+        return n_input_tokens, n_output_tokens
+
+    def _count_tokens_from_prompt(self, prompt, answer, model="text-davinci-003"):
+        encoding = tiktoken.encoding_for_model(model)
+
+        n_input_tokens = len(encoding.encode(prompt)) + 1
+        n_output_tokens = len(encoding.encode(answer))
+
+        return n_input_tokens, n_output_tokens
+
+
+async def transcribe_audio(audio_file):
+    r = await openai.Audio.atranscribe("whisper-1", audio_file)
+    return r["text"]
+
+
+async def generate_images(prompt, n_images=4):
+    r = await openai.Image.acreate(prompt=prompt, n=n_images, size="512x512")
+    image_urls = [item.url for item in r.data]
+    return image_urls
+
+async def is_content_acceptable(prompt):
+    r = await openai.Moderation.acreate(input=prompt)
+    return not all(r.results[0].categories.values())```. "source /Users/aswin/Documents/quivr/.venv/bin/activate
+(.venv) aswin@aswins-MacBook-Air chatgpt_telegram_bot % /Users/aswin/Documents/quivr/.venv/bin/python /Users/aswin/Docu
+ments/chatgpt_telegram_bot/bot/bott.py
+No error handlers are registered, logging exception.
+Traceback (most recent call last):
+  File "/Users/aswin/Documents/quivr/.venv/lib/python3.11/site-packages/telegram/ext/_application.py", line 1104, in process_update
+    await coroutine
+  File "/Users/aswin/Documents/quivr/.venv/lib/python3.11/site-packages/telegram/ext/_handler.py", line 141, in handle_update
+    return await self.callback(update, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aswin/Documents/chatgpt_telegram_bot/bot/bott.py", line 142, in list_handle
+    chats = await context.bot.get_chats()
+                  ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ExtBot' object has no attribute 'get_chats'
+No error handlers are registered, logging exception.
+Traceback (most recent call last):
+  File "/Users/aswin/Documents/quivr/.venv/lib/python3.11/site-packages/telegram/ext/_application.py", line 1104, in process_update
+    await coroutine
+  File "/Users/aswin/Documents/quivr/.venv/lib/python3.11/site-packages/telegram/ext/_handler.py", line 141, in handle_update
+    return await self.callback(update, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aswin/Documents/chatgpt_telegram_bot/bot/bott.py", line 142, in list_handle
+    chats = await context.bot.get_chats()
+                  ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ExtBot' object has no attribute 'get_chats'". give me complete correct modified code to resolve this error. also modify "bot/database.py" if needed to store the last 30 days of messages so the users can get the /summary of the messages
+please continue with the python code to summarize the content of a group/channel, modify the database.py file to add a new method get_all_chat_ids that returns a list of all chat IDs stored in the database based on the code provided and the code you provided in the last message

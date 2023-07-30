@@ -1,0 +1,83 @@
+"scripts/supabase_new_store_documents.sql" ```create extension if not exists vector;
+create table if not exists vectors (
+id bigserial primary key,
+user_id text,
+content text,
+metadata jsonb,
+embedding vector(1536)
+);
+CREATE OR REPLACE FUNCTION match_vectors(query_embedding vector(1536), match_count int, p_user_id text)
+    RETURNS TABLE(
+        id bigint,
+        user_id text,
+        content text,
+        metadata jsonb,
+        embedding vector(1536),
+        similarity float)
+    LANGUAGE plpgsql
+    AS $$
+    # variable_conflict use_column
+BEGIN
+    RETURN query
+    SELECT
+        id,
+        user_id,
+        content,
+        metadata,
+        embedding,
+        1 -(vectors.embedding <=> query_embedding) AS similarity
+    FROM
+        vectors
+    WHERE vectors.user_id = p_user_id 
+    ORDER BY
+        vectors.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;``` "scripts/supabase_usage_table.sql" ```create table
+  stats (
+    time timestamp,
+    chat boolean,
+    embedding boolean,
+    details text,
+    metadata jsonb,
+    id integer primary key generated always as identity
+  );``` "scripts/supabase_vector_store_summary.sql" ```create table if not exists summaries (
+    id bigserial primary key,
+    document_id bigint references vectors(id),
+    content text,
+    metadata jsonb,
+    embedding vector(1536)
+);
+CREATE OR REPLACE FUNCTION match_summaries(query_embedding vector(1536), match_count int, match_threshold float)
+    RETURNS TABLE(
+        id bigint,
+        document_id bigint,
+        content text,
+        metadata jsonb,
+        embedding vector(1536),
+        similarity float)
+    LANGUAGE plpgsql
+    AS $$
+    # variable_conflict use_column
+BEGIN
+    RETURN query
+    SELECT
+        id,
+        document_id,
+        content,
+        metadata,
+        embedding,
+        1 -(summaries.embedding <=> query_embedding) AS similarity
+    FROM
+        summaries
+    WHERE 1 - (summaries.embedding <=> query_embedding) > match_threshold
+    ORDER BY
+        summaries.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;``` "scripts/supabase_users_table.sql" ```create table if not exists users(
+    date text,
+    user_id text,
+    requests_count int
+);```. these are the postgresql queries i used for the database. what do you mean by "your own implementation of the stored procedure"?.
+give me correct complete modified query based on the queries and the code provided

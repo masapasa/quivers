@@ -1,0 +1,4 @@
+An inventory provides an overview and improves controllability
+Mission #1 deals with improving the management and maintenance of the systems by taking inventory of all heat-generating systems and their components. So far, only metadata such as type, year of construction and boiler performance is available. A detailed inventory should collect additional information, such as condition, wear and servicing requirements to optimise system maintenance and avoid breakdowns.
+
+For this purpose, we are looking for innovative solutions and technologies that will make a comprehensive inventory of the systems possible and in doing so, make an important contribution to increasing efficiency and conserving resources.

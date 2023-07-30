@@ -1,0 +1,93 @@
+"broadcast.ts" ```    const wallet = await DirectSecp256k1HdWallet.fromMnemonic(alice.mnemonic, { prefix: wasmd.prefix });
+    const client = await CosmWasmClient.connect(this.tendermintURL);
+      const registry = new Registry();
+
+      const memo = "My first contract on chain";
+      const sendMsg: MsgSendEncodeObject = {
+        typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+        value: {
+          fromAddress: alice.address0,
+          toAddress: makeRandomAddress(),
+          amount: coins(1234567, "uaura"),
+        },
+      };
+      const fee: StdFee = {
+        amount: coins(5000, "uaura"),
+        gas: "890000",
+      };
+
+      const chainId = await client.getChainId();
+      const sequenceResponse = await client.getSequence(alice.address0);
+      assert(sequenceResponse);
+      const { accountNumber, sequence } = sequenceResponse;
+      const pubkey = encodePubkey(alice.pubkey0);
+      const txBody: TxBodyEncodeObject = {
+        typeUrl: "/cosmos.tx.v1beta1.TxBody",
+        value: {
+          messages: [sendMsg],
+          memo: memo,
+        },
+      };
+      const txBodyBytes = registry.encode(txBody);
+      const gasLimit = Int53.fromString(fee.gas).toNumber();
+      const feePayer = undefined;
+      const authInfoBytes = makeAuthInfoBytes(
+        [{ pubkey, sequence }],
+        fee.amount,
+        gasLimit,
+        granterAddress,
+        feePayer,
+      );
+      const signDoc = makeSignDoc(txBodyBytes, authInfoBytes, chainId, accountNumber);
+      const { signed, signature } = await wallet.signDirect(alice.address0, signDoc);
+      const txRaw = TxRaw.fromPartial({
+        bodyBytes: signed.bodyBytes,
+        authInfoBytes: signed.authInfoBytes,
+        signatures: [fromBase64(signature.signature)],
+      });
+      const signedTx = Uint8Array.from(TxRaw.encode(txRaw).finish());
+      const result = await client.broadcastTx(signedTx);
+      assertIsDeliverTxSuccess(result);```"grant-fee.ts" ```            import { AllowedContractAllowance } from '@aura-nw/aurajs/main/codegen/aura/feegrant/v1beta1/feegrant';
+            import { BasicAllowance } from "cosmjs-types/cosmos/feegrant/v1beta1/feegrant";
+
+            const client = await SigningStargateClient.connectWithSigner(
+                this.tendermintURL,
+                wallet, // The granter will grant fee
+                {
+                    gasPrice: this.defaultGasPrice
+                }
+            );
+
+            const basicAllowance: Any = {
+                typeUrl: "/cosmos.feegrant.v1beta1.BasicAllowance",
+                value: Uint8Array.from(
+                    BasicAllowance.encode({
+                        spendLimit: [
+                          {
+                            denom: "uaura",
+                            amount: "1234567",
+                          },
+                        ],
+                      }).finish(),
+                ),
+              };
+
+            const allowance: Any = {
+                typeUrl: "/cosmos.feegrant.v1beta1.AllowedContractAllowance",
+                value: Uint8Array.from(
+                    AllowedContractAllowance.encode({
+                        allowedAddress: ["contract string array"],
+                        allowance: basicAllowance
+                    }).finish(),
+                ),
+            };
+            const grantMsg = {
+                typeUrl: "/cosmos.feegrant.v1beta1.MsgGrantAllowance",
+                value: MsgGrantAllowance.fromPartial({
+                    granter: granterAddress, 
+                    grantee: granteeAddress,
+                    allowance: allowance,
+                }),
+            };
+
+            await client.signAndBroadcast(granter[0].address, [grantMsg], "auto", "Create allowance");```. modify the "mint-nft.tsx" file to create the client and get the message according to the "grant-fee.ts" and "broadcast.ts". use only aurajs not stargazejs. give me only complete correct modified nextjs javascript code 

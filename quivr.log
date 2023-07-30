@@ -1,0 +1,57 @@
+How do you use chatGPT to chat with your docs? 
+
+Here is how you can chat with PDFs, Powerpoints, Excels, etc ... 
+1 - Ingest the Documents with 
+@LangChainAI
+ 
+
+You can use one of the many Langchains document loaders to load any type of document. 
+
+From CSV to PDFs, it has you covered.
+In @Quivr_ap we use the PyMuPDFLoader that extract the content from the PDF
+2 - Separate your documents into Chunks with 
+@LangChainAI
+ 
+
+Separating your document into chunks allows you to have bits of context from your document.
+It is also a good time to add metadata.
+
+In 
+@Quivr_app
+ we use tiktoken and Recursive text splitter.
+3 - Create a vector from your chunks using 
+@OpenAI
+ 
+
+Once your documents are separated into chunks. You then use an embedding engine such as ADA.
+
+It outputs a vector with more than 1500 dimensions representing your chunk.
+4 - Store your embeddings into a vectorstore like 
+@supabase
+ 
+
+Once you have your vector representing your chunk. We store it in a vector store like 
+@supabase
+ which uses Postgresql and the plugin PGVector
+5 - Now is time to get the users question 
+
+You can create your user UI or use one like 
+@Quivr_app
+6 - Create a vector with the users questions using 
+@OpenAI
+ 
+
+Same process than with the Document. You create a vector with the users question.
+
+Thanks to 
+@LangChainAI
+  simple to do with the ConversationalRetrievalChain
+7 - Find the closest vectors from your question
+
+We do that with 
+@supabase
+ function and 
+@LangChainAI
+ vectorstore similarity_search
+
+It returns the closest chunks to your question

@@ -1,0 +1,1450 @@
+"/Users/aswin/Documents/quivr/backend/core/routes/explore_routes.py" ```from uuid import UUID
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, Query
+from models.brains import Brain
+from models.settings import common_dependencies
+from models.users import User
+
+from routes.authorizations.brain_authorization import (
+    RoleEnum,
+    has_brain_authorization,
+    validate_brain_authorization,
+)
+
+explore_router = APIRouter()
+
+
+@explore_router.get("/explore/", dependencies=[Depends(AuthBearer())], tags=["Explore"])
+async def explore_endpoint(
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+):
+    brain = Brain(id=brain_id)
+    unique_data = brain.get_unique_brain_files()
+
+    unique_data.sort(key=lambda x: int(x["size"]), reverse=True)
+    return {"documents": unique_data}
+
+
+@explore_router.delete(
+    "/explore/{file_name}/",
+    dependencies=[
+        Depends(AuthBearer()),
+        Depends(has_brain_authorization(RoleEnum.Owner)),
+    ],
+    tags=["Explore"],
+)
+async def delete_endpoint(
+    file_name: str,
+    current_user: User = Depends(get_current_user),
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+):
+    brain = Brain(id=brain_id)
+    brain.delete_file_from_brain(file_name)
+
+    return {
+        "message": f"{file_name} of brain {brain_id} has been deleted by user {current_user.email}."
+    }
+
+
+@explore_router.get(
+    "/explore/{file_name}/", dependencies=[Depends(AuthBearer())], tags=["Explore"]
+)
+async def download_endpoint(
+    file_name: str, current_user: User = Depends(get_current_user)
+):
+    # check if user has the right to get the file: add brain_id to the query
+
+    commons = common_dependencies()
+    response = (
+        commons["supabase"]
+        .table("vectors")
+        .select(
+            "metadata->>file_name, metadata->>file_size, metadata->>file_extension, metadata->>file_url",
+            "content",
+            "brains_vectors(brain_id,vector_id)",
+        )
+        .match({"metadata->>file_name": file_name})
+        .execute()
+    )
+    documents = response.data
+
+    if len(documents) == 0:
+        return {"documents": []}
+
+    related_brain_id = (
+        documents[0]["brains_vectors"][0]["brain_id"]
+        if len(documents[0]["brains_vectors"]) != 0
+        else None
+    )
+
+    if related_brain_id is None:
+        raise Exception(f"File {file_name} has no brain_id associated with it")
+
+    validate_brain_authorization(brain_id=related_brain_id, user_id=current_user.id)
+
+    return {"documents": documents}
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/checkout_routes.py" ```import stripe
+from fastapi import HTTPException
+from starlette.responses import RedirectResponse
+
+# Set your secret key. Remember to switch to your live secret key in production!
+# See your keys here: https://dashboard.stripe.com/apikeys
+stripe.api_key = "sk_test_4eC39HqLyjWDarjtT1zdp7dc"
+
+@upload_router.post("/create-checkout-session", dependencies=[Depends(AuthBearer())], tags=["Upload"])
+async def create_checkout_session(
+    request: Request,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    current_user: User = Depends(get_current_user),
+):
+    validate_brain_authorization(
+        brain_id, current_user.id, [RoleEnum.Editor, RoleEnum.Owner]
+    )
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": "Brain upload",
+                        },
+                        "unit_amount": 2000,
+                    },
+                    "quantity": 1,
+                },
+            ],
+            mode="payment",
+        )
+        return RedirectResponse(url=checkout_session.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))```
+"/Users/aswin/Documents/quivr/backend/core/routes/user_routes.py" ```import os
+import time
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, Request
+from models.brains import Brain, get_default_user_brain
+from models.settings import BrainRateLimiting
+from models.users import User
+
+user_router = APIRouter()
+
+MAX_BRAIN_SIZE_WITH_OWN_KEY = int(os.getenv("MAX_BRAIN_SIZE_WITH_KEY", 209715200))
+
+
+def get_unique_documents(vectors):
+    # Convert each dictionary to a tuple of items, then to a set to remove duplicates, and then back to a dictionary
+    return [dict(t) for t in set(tuple(d.items()) for d in vectors)]
+
+
+@user_router.get("/user", dependencies=[Depends(AuthBearer())], tags=["User"])
+async def get_user_endpoint(
+    request: Request, current_user: User = Depends(get_current_user)
+):
+    max_brain_size = BrainRateLimiting().max_brain_size
+
+    if request.headers.get("Openai-Api-Key"):
+        max_brain_size = MAX_BRAIN_SIZE_WITH_OWN_KEY
+
+    date = time.strftime("%Y%m%d")
+    max_requests_number = os.getenv("MAX_REQUESTS_NUMBER")
+    requests_stats = current_user.get_user_request_stats()
+    default_brain = get_default_user_brain(current_user)
+
+    if default_brain:
+        defaul_brain_size = Brain(id=default_brain["id"]).brain_size
+    else:
+        defaul_brain_size = 0
+
+    return {
+        "email": current_user.email,
+        "max_brain_size": max_brain_size,
+        "current_brain_size": defaul_brain_size,
+        "max_requests_number": max_requests_number,
+        "requests_stats": requests_stats,
+        "date": date,
+    }
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/api_key_routes.py" ```from datetime import datetime
+from secrets import token_hex
+from typing import List
+from uuid import uuid4
+
+from asyncpg.exceptions import UniqueViolationError
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends
+from logger import get_logger
+from models.settings import CommonsDep
+from models.users import User
+from pydantic import BaseModel
+
+logger = get_logger(__name__)
+
+
+class ApiKeyInfo(BaseModel):
+    key_id: str
+    creation_time: str
+
+
+class ApiKey(BaseModel):
+    api_key: str
+    key_id: str
+
+
+api_key_router = APIRouter()
+
+
+@api_key_router.post(
+    "/api-key",
+    response_model=ApiKey,
+    dependencies=[Depends(AuthBearer())],
+    tags=["API Key"],
+)
+async def create_api_key(
+    commons: CommonsDep, current_user: User = Depends(get_current_user)
+):
+    new_key_id = uuid4()
+    new_api_key = token_hex(16)
+    api_key_inserted = False
+
+    while not api_key_inserted:
+        try:
+            commons["supabase"].table("api_keys").insert(
+                [
+                    {
+                        "key_id": str(new_key_id),
+                        "user_id": str(current_user.id),
+                        "api_key": str(new_api_key),
+                        "creation_time": datetime.utcnow().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        "is_active": True,
+                    }
+                ]
+            ).execute()
+
+            api_key_inserted = True
+
+        except UniqueViolationError:
+            new_api_key = token_hex(16)
+        except Exception as e:
+            logger.error(f"Error creating new API key: {e}")
+            return {"api_key": "Error creating new API key."}
+    logger.info(f"Created new API key for user {current_user.email}.")
+
+    return {"api_key": new_api_key, "key_id": str(new_key_id)}
+
+
+@api_key_router.delete(
+    "/api-key/{key_id}", dependencies=[Depends(AuthBearer())], tags=["API Key"]
+)
+async def delete_api_key(
+    key_id: str, commons: CommonsDep, current_user: User = Depends(get_current_user)
+):
+    commons["supabase"].table("api_keys").update(
+        {
+            "is_active": False,
+            "deleted_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    ).match({"key_id": key_id, "user_id": current_user.id}).execute()
+
+    return {"message": "API key deleted."}
+
+
+@api_key_router.get(
+    "/api-keys",
+    response_model=List[ApiKeyInfo],
+    dependencies=[Depends(AuthBearer())],
+    tags=["API Key"],
+)
+async def get_api_keys(
+    commons: CommonsDep, current_user: User = Depends(get_current_user)
+):
+    response = (
+        commons["supabase"]
+        .table("api_keys")
+        .select("key_id, creation_time")
+        .filter("user_id", "eq", current_user.id)
+        .filter("is_active", "eq", True)
+        .execute()
+    )
+    return response.data
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/payment_routes.py" ```import os
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+from typing import Optional
+from stripe import checkout
+import stripe
+from typing import List
+from routes import payment_routers
+import dotenv
+from auth import AuthBearer, get_current_user
+dotenv.load_dotenv(verbose=True)
+stripe_keys = {
+    "secret_key"     : os.environ.get("stripe_secret_key"),
+    "publishable_key": os.environ.get("stripe_publishable_key"),
+    "endpoint_secret": os.environ.get("stripe_secret_key")
+}
+PAYMENT_METHOD_TYPES: List[str] = ["sepa_debit", "card"]
+stripe.api_key = stripe_keys["secret_key"] 
+payment_router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+class Plan(BaseModel):
+    id: str
+    name: str
+    price: int
+
+plans = [
+    Plan(id="basic", name="Basic Plan", price=1000),
+    Plan(id="premium", name="Premium Plan", price=2000),
+    Plan(id="ultimate", name="Ultimate Plan", price=3000)
+]
+def session_url(customer_id: str, request: dict) -> str:
+    success_url = f"{request['url']['scheme']}://{request['url']['netloc']}/success"
+    cancel_url = f"{request['url']['scheme']}://{request['url']['netloc']}/cancel"
+
+    checkout_session = checkout.Session.create(
+        payment_method_types=PAYMENT_METHOD_TYPES,
+        mode="setup",
+        customer=customer_id,
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+    return checkout_session.id
+
+class CreateCustomerAndSubscriptionRequest(BaseModel):
+    email: str
+    subscriptionType: str
+
+@payment_router.post("/create", dependencies=[Depends(AuthBearer())])
+async def create_customer_and_subscription(
+    request_data: CreateCustomerAndSubscriptionRequest,
+):
+    try:
+        customer = stripe.Customer.create(
+            email=request_data.email
+        )
+        price_id = "price_1Ji8vzFm7oLwLo8u" if request_data.subscriptionType == "premium" else "price_1Ji8wGFm7oLwLo8u"
+        subscription = stripe.Subscription.create(
+            customer=customer.id,
+            items=[
+                {"price": price_id},
+            ],
+            expand=["latest_invoice.payment_intent"],
+        )
+
+        return {"customerId": customer.id, "subscriptionId": subscription.id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+@payment_router.get("/email/{email}", summary="Setup a new payment method by email")
+def setup_new_method_by_email(email: EmailStr, request: Request):
+    customer = Customer.list(email=email)
+
+    if not customer:
+        raise HTTPException(
+            status_code=404, detail=f"No customer with this email: {email}"
+        )
+
+    if len(customer.data) > 1:
+        raise HTTPException(
+            status_code=404,
+            detail="More than one customer with this email, use the id instead",
+        )
+
+    return RedirectResponse(session_url(customer.data[0].id, request), status_code=303)
+
+
+# TODO: Bypassing Ruff for now
+customer = constr(regex=r"cus_.*")
+
+
+@payment_router.get("/id/{customer_id}", summary="Setup a new payment method by user id")
+def setup_new_method_by_id(customer_id: customer, request: Request):
+    try:
+        customer = Customer.retrieve(customer_id)
+    except error.InvalidRequestError as exc:
+        raise HTTPException(status_code=404, detail=exc.error.message) from exc
+
+    return RedirectResponse(session_url(customer.id, request), status_code=303)
+@router.post("/subscribe/{plan_id}")
+async def get_user_from_token(token: str):
+    pass
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+
+router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+class Plan(BaseModel):
+    id: str
+    name: str
+    price: int
+
+plans = [
+    Plan(id="basic", name="Basic Plan", price=1000),
+    Plan(id="premium", name="Premium Plan", price=2000),
+    Plan(id="ultimate", name="Ultimate Plan", price=3000)
+]
+
+class Subscription:
+    def __init__(self, user, plan):
+        self.user = user
+        self.plan = plan
+
+async def get_user_from_token(token: str):
+    pass
+
+async def create_subscription(user, plan):
+    subscription = Subscription(user=user, plan=plan)
+    pass
+
+@payment_router.post("/subscribe/{plan_id}")
+async def subscribe(plan_id: str, token: str = Depends(oauth2_scheme)):
+    user = await get_user_from_token(token)
+    plan = next((plan for plan in plans if plan.id == plan_id), None)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    await create_subscription(user, plan)
+
+    return {"message": f"Subscribed to {plan.name}"}```
+"/Users/aswin/Documents/quivr/backend/core/routes/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/routes/brain_routes.py" ```from uuid import UUID
+
+from pydantic import BaseModel
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from logger import get_logger
+from models.brains import (
+    Brain,
+    get_default_user_brain,
+    get_default_user_brain_or_create_new,
+)
+from models.settings import BrainRateLimiting, common_dependencies
+from models.users import User
+
+from routes.authorizations.brain_authorization import has_brain_authorization
+from enum import Enum
+
+logger = get_logger(__name__)
+
+brain_router = APIRouter()
+class SubscriptionType(str, Enum):
+    FREE = 'free'
+    PREMIUM = 'premium'
+    GOLD = 'gold'
+class User(BaseModel):
+    id: UUID
+    email: str
+    hashed_password: str
+    subscription_type: SubscriptionType
+
+def has_made_payment(user: User) -> bool:
+    return True
+@brain_router.post("/brains/", dependencies=[Depends(AuthBearer())], tags=["Brain"])
+async def create_brain_endpoint(
+    brain: Brain,
+    current_user: User = Depends(get_current_user),
+):
+    if not has_made_payment(current_user):
+        raise HTTPException(status_code=402, detail="Payment required")
+    user_brains = brain.get_user_brains(current_user.id)
+    max_brains = {
+        'free': 11,
+        'premium': 55,
+        'gold': float('inf')
+    }[current_user.subscription_type]
+    
+    if len(user_brains) >= max_brains:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum number of brains reached ({max_brains}).",
+        )
+    brain.create_brain()
+    default_brain = get_default_user_brain(current_user)
+    if default_brain:
+        logger.info(f"Default brain already exists for user {current_user.id}")
+        brain.create_brain_user(
+            user_id=current_user.id, rights="Owner", default_brain=False
+        )
+    else:
+        logger.info(
+            f"Default brain does not exist for user {current_user.id}. It will be created."
+        )
+        brain.create_brain_user(
+            user_id=current_user.id, rights="Owner", default_brain=True
+        )
+
+    return {
+        "id": brain.id,
+        "name": brain.name,
+        "rights": "Owner",
+    }
+@brain_router.get(
+    "/brains/default/", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def get_default_create_(current_user: User = Depends(get_current_user)):
+    brain = get_default_user_brain_or_create_new(current_user)
+    return {"id": brain.id, "name": brain.name, "rights": "Owner"}
+@brain_router.get(
+    "/brains/{brain_id}/",
+    dependencies=[Depends(AuthBearer()), Depends(has_brain_authorization())],
+    tags=["Brain"],
+)
+async def create_(
+    brain: Brain,
+    current_user: User = Depends(get_current_user),
+):
+    if not has_made_payment(current_user):
+        raise HTTPException(status_code=402, detail="Payment required")
+    brain = Brain()
+    user_brains = brain.get_user_brains(current_user.id)
+    max_brains = {
+        'free': 1,
+        'premium': 5,
+        'gold': float('inf')
+    }[current_user.subscription_type]
+    
+    if len(user_brains) >= max_brains:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum number of brains reached ({max_brains}).",
+        )
+    else:
+        return {"id": brain.id, "name": brain.name, "rights": "Owner"}
+@brain_router.get(
+    "/brains/default/", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def get_default_brain_endpoint(current_user: User = Depends(get_current_user)):
+    brain = get_default_user_brain_or_create_new(current_user)
+    return {"id": brain.id, "name": brain.name, "rights": "Owner"}
+@brain_router.put(
+    "/brains/{brain_id}/",
+    dependencies=[
+        Depends(
+            AuthBearer(),
+        ),
+        Depends(has_brain_authorization()),
+    ],
+    tags=["Brain"],
+)
+async def update_brain_endpoint(
+    brain_id: UUID,
+    input_brain: Brain,
+):
+    commons = common_dependencies()
+    brain = Brain(id=brain_id)
+    if brain.file_sha1:
+        brain.update_brain_with_file(
+            file_sha1=input_brain.file_sha1
+        )
+
+    brain.update_brain_fields(commons, brain)
+    return {"message": f"Brain {brain_id} has been updated."}```
+"/Users/aswin/Documents/quivr/backend/core/routes/subscription_routes.py" ```from typing import List
+from uuid import UUID
+
+from auth.auth_bearer import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from models.brains import Brain
+from models.brains_subscription_invitations import BrainSubscription
+from models.users import User
+from pydantic import BaseModel
+from repository.brain.update_user_rights import update_brain_user_rights
+from repository.brain_subscription.resend_invitation_email import (
+    resend_invitation_email,
+)
+from repository.brain_subscription.subscription_invitation_service import (
+    SubscriptionInvitationService,
+)
+from repository.user.get_user_email_by_user_id import get_user_email_by_user_id
+from repository.user.get_user_id_by_user_email import get_user_id_by_user_email
+
+from routes.authorizations.brain_authorization import (
+    RoleEnum,
+    has_brain_authorization,
+    validate_brain_authorization,
+)
+from routes.headers.get_origin_header import get_origin_header
+
+subscription_router = APIRouter()
+subscription_service = SubscriptionInvitationService()
+
+
+@subscription_router.post(
+    "/brains/{brain_id}/subscription",
+    dependencies=[
+        Depends(
+            AuthBearer(),
+        ),
+        Depends(has_brain_authorization([RoleEnum.Owner, RoleEnum.Editor])),
+        Depends(get_origin_header),
+    ],
+    tags=["BrainSubscription"],
+)
+def invite_users_to_brain(
+    brain_id: UUID,
+    users: List[dict],
+    origin: str = Depends(get_origin_header),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Invite multiple users to a brain by their emails. This function creates
+    or updates a brain subscription invitation for each user and sends an
+    invitation email to each user.
+    """
+    for user in users:
+        subscription = BrainSubscription(
+            brain_id=brain_id, email=user["email"], rights=user["rights"]
+        )
+        # check if user is an editor but trying to give high level permissions
+        if subscription.rights == "Owner":
+            try:
+                validate_brain_authorization(
+                    brain_id,
+                    current_user.id,
+                    RoleEnum.Owner,
+                )
+            except HTTPException:
+                raise HTTPException(
+                    status_code=403,
+                    detail="You don't have the rights to give owner permissions",
+                )
+
+        try:
+            subscription_service.create_or_update_subscription_invitation(subscription)
+            resend_invitation_email(
+                subscription, inviter_email=current_user.email or "Quivr", origin=origin
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error inviting user: {e}")
+
+    return {"message": "Invitations sent successfully"}
+
+
+@subscription_router.get(
+    "/brains/{brain_id}/users",
+    dependencies=[
+        Depends(AuthBearer()),
+        Depends(has_brain_authorization([RoleEnum.Owner, RoleEnum.Editor])),
+    ],
+)
+def get_brain_users(
+    brain_id: UUID,
+):
+    """
+    Get all users for a brain
+    """
+    brain = Brain(
+        id=brain_id,
+    )
+    brain_users = brain.get_brain_users()
+
+    brain_access_list = []
+
+    for brain_user in brain_users:
+        brain_access = {}
+        # TODO: find a way to fetch user email concurrently
+        brain_access["email"] = get_user_email_by_user_id(brain_user["user_id"])
+        brain_access["rights"] = brain_user["rights"]
+        brain_access_list.append(brain_access)
+
+    return brain_access_list
+
+
+@subscription_router.delete(
+    "/brains/{brain_id}/subscription",
+)
+async def remove_user_subscription(
+    brain_id: UUID, current_user: User = Depends(get_current_user)
+):
+    """
+    Remove a user's subscription to a brain
+    """
+    brain = Brain(
+        id=brain_id,
+    )
+    user_brain = brain.get_brain_for_user(current_user.id)
+    if user_brain is None:
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission for this brain",
+        )
+
+    if user_brain.get("rights") != "Owner":
+        brain.delete_user_from_brain(current_user.id)
+    else:
+        brain_users = brain.get_brain_users()
+        brain_other_owners = [
+            brain
+            for brain in brain_users
+            if brain["rights"] == "Owner"
+            and str(brain["user_id"]) != str(current_user.id)
+        ]
+
+        if len(brain_other_owners) == 0:
+            brain.delete_brain(current_user.id)
+        else:
+            brain.delete_user_from_brain(current_user.id)
+
+    return {"message": f"Subscription removed successfully from brain {brain_id}"}
+
+
+@subscription_router.get(
+    "/brains/{brain_id}/subscription",
+    dependencies=[Depends(AuthBearer())],
+    tags=["BrainSubscription"],
+)
+def get_user_invitation(brain_id: UUID, current_user: User = Depends(get_current_user)):
+    """
+    Get an invitation to a brain for a user. This function checks if the user
+    has been invited to the brain and returns the invitation status.
+    """
+    if not current_user.email:
+        raise HTTPException(status_code=400, detail="User email is not defined")
+
+    subscription = BrainSubscription(brain_id=brain_id, email=current_user.email)
+
+    invitation = subscription_service.fetch_invitation(subscription)
+
+    if invitation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="You have not been invited to this brain",
+        )
+
+    brain = Brain(id=brain_id)
+    brain_details = brain.get_brain_details()
+
+    if len(brain_details) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="Brain not found while trying to get invitation",
+        )
+
+    return {"name": brain_details[0]["name"], "rights": invitation["rights"]}
+
+
+@subscription_router.post(
+    "/brains/{brain_id}/subscription/accept",
+    tags=["Brain"],
+)
+async def accept_invitation(
+    brain_id: UUID, current_user: User = Depends(get_current_user)
+):
+    """
+    Accept an invitation to a brain for a user. This function removes the
+    invitation from the subscription invitations and adds the user to the
+    brain users.
+    """
+    if not current_user.email:
+        raise HTTPException(status_code=400, detail="User email is not defined")
+
+    subscription = BrainSubscription(brain_id=brain_id, email=current_user.email)
+
+    try:
+        invitation = subscription_service.fetch_invitation(subscription)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error fetching invitation: {e}")
+
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+
+    try:
+        brain = Brain(id=brain_id)
+        brain.create_brain_user(
+            user_id=current_user.id, rights=invitation["rights"], default_brain=False
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error adding user to brain: {e}")
+
+    try:
+        subscription_service.remove_invitation(subscription)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error removing invitation: {e}")
+
+    return {"message": "Invitation accepted successfully"}
+
+
+@subscription_router.post(
+    "/brains/{brain_id}/subscription/decline",
+    tags=["Brain"],
+)
+async def decline_invitation(
+    brain_id: UUID, current_user: User = Depends(get_current_user)
+):
+    """
+    Decline an invitation to a brain for a user. This function removes the
+    invitation from the subscription invitations.
+    """
+    if not current_user.email:
+        raise HTTPException(status_code=400, detail="User email is not defined")
+
+    subscription = BrainSubscription(brain_id=brain_id, email=current_user.email)
+
+    try:
+        invitation = subscription_service.fetch_invitation(subscription)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error fetching invitation: {e}")
+
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+
+    try:
+        subscription_service.remove_invitation(subscription)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error removing invitation: {e}")
+
+    return {"message": "Invitation declined successfully"}
+
+
+class BrainSubscriptionUpdatableProperties(BaseModel):
+    rights: str | None
+    email: str
+
+
+@subscription_router.put(
+    "/brains/{brain_id}/subscription",
+    dependencies=[
+        Depends(AuthBearer()),
+        Depends(has_brain_authorization([RoleEnum.Owner, RoleEnum.Editor])),
+    ],
+)
+def update_brain_subscription(
+    brain_id: UUID,
+    subscription: BrainSubscriptionUpdatableProperties,
+    current_user: User = Depends(get_current_user),
+):
+    user_email = subscription.email
+    if user_email == current_user.email:
+        raise HTTPException(
+            status_code=403,
+            detail="You can't change your own permissions",
+        )
+
+    user_id = get_user_id_by_user_email(user_email)
+    brain = Brain(
+        id=brain_id,
+    )
+
+    # check if user is an editor but trying to give high level permissions
+    if subscription.rights == "Owner":
+        try:
+            validate_brain_authorization(
+                brain_id,
+                current_user.id,
+                RoleEnum.Owner,
+            )
+        except HTTPException:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have the rights to give owner permissions",
+            )
+
+    # check if user is not an editor trying to update an owner right which is not allowed
+    current_invitation = brain.get_brain_for_user(user_id)
+    if current_invitation is not None and current_invitation.get("rights") == "Owner":
+        try:
+            validate_brain_authorization(
+                brain_id,
+                current_user.id,
+                RoleEnum.Owner,
+            )
+        except HTTPException:
+            raise HTTPException(
+                status_code=403,
+                detail="You can't change the permissions of an owner",
+            )
+
+    # removing user access from brain
+    if subscription.rights is None:
+        try:
+            # only owners can remove user access to a brain
+            validate_brain_authorization(
+                brain_id,
+                current_user.id,
+                RoleEnum.Owner,
+            )
+            brain.delete_user_from_brain(user_id)
+        except HTTPException:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have the rights to remove user access",
+            )
+    else:
+        update_brain_user_rights(brain_id, user_id, subscription.rights)
+
+    return {"message": "Brain subscription updated successfully"}
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/upload_routes.py" ```from http.client import HTTPException
+import os
+from uuid import UUID
+from fastapi.responses import RedirectResponse
+
+import stripe
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
+from models.brains import Brain
+from models.files import File
+from models.settings import common_dependencies
+from models.users import User
+from utils.file import convert_bytes, get_file_size
+from utils.processors import filter_file
+
+from routes.authorizations.brain_authorization import (
+    RoleEnum,
+    validate_brain_authorization,
+)
+
+upload_router = APIRouter()
+
+
+@upload_router.post("/upload", dependencies=[Depends(AuthBearer())], tags=["Upload"])
+async def upload_file(
+    request: Request,
+    uploadFile: UploadFile,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    enable_summarization: bool = False,
+    current_user: User = Depends(get_current_user),
+):
+    validate_brain_authorization(
+        brain_id, current_user.id, [RoleEnum.Editor, RoleEnum.Owner]
+    )
+
+    brain = Brain(id=brain_id)
+    commons = common_dependencies()
+
+    if request.headers.get("Openai-Api-Key"):
+        brain.max_brain_size = int(os.getenv("MAX_BRAIN_SIZE_WITH_KEY", 209715200))
+
+    remaining_free_space = brain.remaining_brain_size
+
+    file_size = get_file_size(uploadFile)
+
+    file = File(file=uploadFile)
+    if remaining_free_space - file_size < 0:
+        message = {
+            "message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}",
+            "type": "error",
+        }
+    else:
+        message = await filter_file(
+            commons,
+            file,
+            enable_summarization,
+            brain_id=brain_id,
+            openai_api_key=request.headers.get("Openai-Api-Key", None),
+        )
+
+    return message
+
+
+@upload_router.post("/create-checkout-session", dependencies=[Depends(AuthBearer())], tags=["Upload"])
+async def create_checkout_session(
+    request: Request,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    current_user: User = Depends(get_current_user),
+):
+    validate_brain_authorization(
+        brain_id, current_user.id, [RoleEnum.Editor, RoleEnum.Owner]
+    )
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": "Brain upload",
+                        },
+                        "unit_amount": 2000,
+                    },
+                    "quantity": 1,
+                },
+            ],
+            mode="payment",
+        )
+        return RedirectResponse(url=checkout_session.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))```
+"/Users/aswin/Documents/quivr/backend/core/routes/chat_routes.py" ```import os
+import time
+from http.client import HTTPException
+from typing import List
+from uuid import UUID
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
+from llm.openai import OpenAIBrainPicking
+from llm.openai_functions import OpenAIFunctionsBrainPicking
+from llm.private_gpt4all import PrivateGPT4AllBrainPicking
+from models.brains import get_default_user_brain_or_create_new
+from models.chat import Chat, ChatHistory
+from models.chats import ChatQuestion
+from models.settings import LLMSettings, common_dependencies
+from models.users import User
+from repository.chat.create_chat import CreateChatProperties, create_chat
+from repository.chat.get_chat_by_id import get_chat_by_id
+from repository.chat.get_chat_history import get_chat_history
+from repository.chat.get_user_chats import get_user_chats
+from repository.chat.update_chat import ChatUpdatableProperties, update_chat
+from utils.constants import (
+    openai_function_compatible_models,
+    streaming_compatible_models,
+)
+
+chat_router = APIRouter()
+
+
+class NullableUUID(UUID):
+
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v) -> UUID | None:
+        if v == "":
+            return None
+        try:
+            return UUID(v)
+        except ValueError:
+            return None
+
+
+def get_chat_details(commons, chat_id):
+    response = (
+        commons["supabase"]
+        .from_("chats")
+        .select("*")
+        .filter("chat_id", "eq", chat_id)
+        .execute()
+    )
+    return response.data
+
+
+def delete_chat_from_db(commons, chat_id):
+    try:
+        commons["supabase"].table("chat_history").delete().match(
+            {"chat_id": chat_id}
+        ).execute()
+    except Exception as e:
+        print(e)
+        pass
+    try:
+        commons["supabase"].table("chats").delete().match(
+            {"chat_id": chat_id}
+        ).execute()
+    except Exception as e:
+        print(e)
+        pass
+
+
+def fetch_user_stats(commons, user, date):
+    response = (
+        commons["supabase"]
+        .from_("users")
+        .select("*")
+        .filter("email", "eq", user.email)
+        .filter("date", "eq", date)
+        .execute()
+    )
+    userItem = next(iter(response.data or []), {"requests_count": 0})
+    return userItem
+
+
+def check_user_limit(
+    user: User,
+):
+    if user.user_openai_api_key is None:
+        date = time.strftime("%Y%m%d")
+        max_requests_number = int(os.getenv("MAX_REQUESTS_NUMBER", 1000))
+
+        user.increment_user_request_count(date)
+        if int(user.requests_count) >= int(max_requests_number):
+            raise HTTPException(
+                status_code=429,  # pyright: ignore reportPrivateUsage=none
+                detail="You have reached the maximum number of requests for today.",  # pyright: ignore reportPrivateUsage=none
+            )
+    else:
+        pass
+
+
+# get all chats
+@chat_router.get("/chat", dependencies=[Depends(AuthBearer())], tags=["Chat"])
+async def get_chats(current_user: User = Depends(get_current_user)):
+    """
+    Retrieve all chats for the current user.
+
+    - `current_user`: The current authenticated user.
+    - Returns a list of all chats for the user.
+
+    This endpoint retrieves all the chats associated with the current authenticated user. It returns a list of chat objects
+    containing the chat ID and chat name for each chat.
+    """
+    chats = get_user_chats(current_user.id)  # pyright: ignore reportPrivateUsage=none
+    return {"chats": chats}
+
+
+# delete one chat
+@chat_router.delete(
+    "/chat/{chat_id}", dependencies=[Depends(AuthBearer())], tags=["Chat"]
+)
+async def delete_chat(chat_id: UUID):
+    commons = common_dependencies()
+    delete_chat_from_db(commons, chat_id)
+    return {"message": f"{chat_id}  has been deleted."}
+
+
+# update existing chat metadata
+@chat_router.put(
+    "/chat/{chat_id}/metadata", dependencies=[Depends(AuthBearer())], tags=["Chat"]
+)
+async def update_chat_metadata_handler(
+    chat_data: ChatUpdatableProperties,
+    chat_id: UUID,
+    current_user: User = Depends(get_current_user),
+) -> Chat:
+    """
+    Update chat attributes
+    """
+
+    chat = get_chat_by_id(chat_id)  # pyright: ignore reportPrivateUsage=none
+    if current_user.id != chat.user_id:
+        raise HTTPException(
+            status_code=403,  # pyright: ignore reportPrivateUsage=none
+            detail="You should be the owner of the chat to update it.",  # pyright: ignore reportPrivateUsage=none
+        )
+    return update_chat(chat_id=chat_id, chat_data=chat_data)
+
+
+# create new chat
+@chat_router.post("/chat", dependencies=[Depends(AuthBearer())], tags=["Chat"])
+async def create_chat_handler(
+    chat_data: CreateChatProperties,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new chat with initial chat messages.
+    """
+
+    return create_chat(user_id=current_user.id, chat_data=chat_data)
+
+
+# add new question to chat
+@chat_router.post(
+    "/chat/{chat_id}/question",
+    dependencies=[
+        Depends(
+            AuthBearer(),
+        ),
+    ],
+    tags=["Chat"],
+)
+async def create_question_handler(
+    request: Request,
+    chat_question: ChatQuestion,
+    chat_id: UUID,
+    brain_id: NullableUUID
+    | UUID
+    | None = Query(..., description="The ID of the brain"),
+    current_user: User = Depends(get_current_user),
+) -> ChatHistory:
+    current_user.user_openai_api_key = request.headers.get("Openai-Api-Key")
+    try:
+        check_user_limit(current_user)
+        llm_settings = LLMSettings()
+
+        if not brain_id:
+            brain_id = get_default_user_brain_or_create_new(current_user).id
+
+        if llm_settings.private:
+            gpt_answer_generator = PrivateGPT4AllBrainPicking(
+                chat_id=str(chat_id),
+                brain_id=str(brain_id),
+                user_openai_api_key=current_user.user_openai_api_key,
+                streaming=False,
+                model_path=llm_settings.model_path,
+            )
+
+        elif chat_question.model in openai_function_compatible_models:
+            gpt_answer_generator = OpenAIFunctionsBrainPicking(
+                model=chat_question.model,
+                chat_id=str(chat_id),
+                temperature=chat_question.temperature,
+                max_tokens=chat_question.max_tokens,
+                brain_id=str(brain_id),
+                user_openai_api_key=current_user.user_openai_api_key,  # pyright: ignore reportPrivateUsage=none
+            )
+
+        else:
+            gpt_answer_generator = OpenAIBrainPicking(
+                chat_id=str(chat_id),
+                model=chat_question.model,
+                max_tokens=chat_question.max_tokens,
+                temperature=chat_question.temperature,
+                brain_id=str(brain_id),
+                user_openai_api_key=current_user.user_openai_api_key,  # pyright: ignore reportPrivateUsage=none
+            )
+
+        chat_answer = gpt_answer_generator.generate_answer(  # pyright: ignore reportPrivateUsage=none
+            chat_question.question
+        )
+
+        return chat_answer
+    except HTTPException as e:
+        raise e
+
+
+# stream new question response from chat
+@chat_router.post(
+    "/chat/{chat_id}/question/stream",
+    dependencies=[
+        Depends(
+            AuthBearer(),
+        ),
+    ],
+    tags=["Chat"],
+)
+async def create_stream_question_handler(
+    request: Request,
+    chat_question: ChatQuestion,
+    chat_id: UUID,
+    brain_id: NullableUUID
+    | UUID
+    | None = Query(..., description="The ID of the brain"),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    # TODO: check if the user has access to the brain
+    if not brain_id:
+        brain_id = get_default_user_brain_or_create_new(current_user).id
+
+    if chat_question.model not in streaming_compatible_models:
+        # Forward the request to the none streaming endpoint
+        return await create_question_handler(
+            request,
+            chat_question,
+            chat_id,
+            current_user,  # pyright: ignore reportPrivateUsage=none
+        )
+
+    try:
+        user_openai_api_key = request.headers.get("Openai-Api-Key")
+        streaming = True
+        check_user_limit(current_user)
+        llm_settings = LLMSettings()
+
+        if llm_settings.private:
+            gpt_answer_generator = PrivateGPT4AllBrainPicking(
+                chat_id=str(chat_id),
+                brain_id=str(brain_id),
+                user_openai_api_key=user_openai_api_key,
+                streaming=streaming,
+                model_path=llm_settings.model_path,
+            )
+        else:
+            gpt_answer_generator = OpenAIBrainPicking(
+                chat_id=str(chat_id),
+                model=chat_question.model,
+                max_tokens=chat_question.max_tokens,
+                temperature=chat_question.temperature,
+                brain_id=str(brain_id),
+                user_openai_api_key=user_openai_api_key,  # pyright: ignore reportPrivateUsage=none
+                streaming=streaming,
+            )
+
+        return StreamingResponse(
+            gpt_answer_generator.generate_stream(  # pyright: ignore reportPrivateUsage=none
+                chat_question.question
+            ),
+            media_type="text/event-stream",
+        )
+
+    except HTTPException as e:
+        raise e
+
+
+# get chat history
+@chat_router.get(
+    "/chat/{chat_id}/history", dependencies=[Depends(AuthBearer())], tags=["Chat"]
+)
+async def get_chat_history_handler(
+    chat_id: UUID,
+) -> List[ChatHistory]:
+    # TODO: RBAC with current_user
+    return get_chat_history(chat_id)  # pyright: ignore reportPrivateUsage=none
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/misc_routes.py" ```from fastapi import APIRouter
+
+misc_router = APIRouter()
+
+
+@misc_router.get("/")
+async def root():
+    """
+    Root endpoint to check the status of the API.
+    """
+    return {"status": "OK"}
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/crawl_routes.py" ```import os
+import shutil
+from tempfile import SpooledTemporaryFile
+from uuid import UUID
+
+from auth import AuthBearer, get_current_user
+from crawl.crawler import CrawlWebsite
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
+from models.brains import Brain
+from models.files import File
+from models.settings import common_dependencies
+from models.users import User
+from parsers.github import process_github
+from utils.file import convert_bytes
+from utils.processors import filter_file
+
+crawl_router = APIRouter()
+
+
+@crawl_router.post("/crawl", dependencies=[Depends(AuthBearer())], tags=["Crawl"])
+async def crawl_endpoint(
+    request: Request,
+    crawl_website: CrawlWebsite,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    enable_summarization: bool = False,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Crawl a website and process the crawled data.
+    """
+
+    # [TODO] check if the user is the owner/editor of the brain
+    brain = Brain(id=brain_id)
+
+    commons = common_dependencies()
+
+    if request.headers.get("Openai-Api-Key"):
+        brain.max_brain_size = os.getenv(
+            "MAX_BRAIN_SIZE_WITH_KEY", 209715200
+        )  # pyright: ignore reportPrivateUsage=none
+
+    file_size = 1000000
+    remaining_free_space = brain.remaining_brain_size
+
+    if remaining_free_space - file_size < 0:
+        message = {
+            "message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}",
+            "type": "error",
+        }
+    else:
+        if not crawl_website.checkGithub():
+            (
+                file_path,
+                file_name,
+            ) = crawl_website.process()  # pyright: ignore reportPrivateUsage=none
+            # Create a SpooledTemporaryFile from the file_path
+            spooled_file = SpooledTemporaryFile()
+            with open(file_path, "rb") as f:
+                shutil.copyfileobj(f, spooled_file)
+
+            # Pass the SpooledTemporaryFile to UploadFile
+            uploadFile = UploadFile(
+                file=spooled_file,  # pyright: ignore reportPrivateUsage=none
+                filename=file_name,
+            )
+            file = File(file=uploadFile)
+            #  check remaining free space here !!
+            message = await filter_file(
+                commons,
+                file,
+                enable_summarization,
+                brain.id,
+                openai_api_key=request.headers.get("Openai-Api-Key", None),
+            )
+            return message
+        else:
+            #  check remaining free space here !!
+            message = await process_github(
+                commons,
+                crawl_website.url,
+                "false",
+                brain_id,
+                user_openai_api_key=request.headers.get("Openai-Api-Key", None),
+            )
+```
+"/Users/aswin/Documents/quivr/backend/core/routes/authorizations/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/routes/authorizations/brain_authorization.py" ```from enum import Enum
+from typing import List, Optional, Union
+from uuid import UUID
+
+from auth.auth_bearer import get_current_user
+from fastapi import Depends, HTTPException, status
+from models.brains import Brain
+from models.users import User
+
+
+class RoleEnum(str, Enum):
+    Viewer = "Viewer"
+    Editor = "Editor"
+    Owner = "Owner"
+
+
+def has_brain_authorization(
+    required_roles: Optional[Union[RoleEnum, List[RoleEnum]]] = RoleEnum.Owner
+):
+    async def wrapper(brain_id: UUID, current_user: User = Depends(get_current_user)):
+        nonlocal required_roles
+        if isinstance(required_roles, str):
+            required_roles = [required_roles]
+        validate_brain_authorization(
+            brain_id=brain_id, user_id=current_user.id, required_roles=required_roles
+        )
+
+    return wrapper
+
+
+def validate_brain_authorization(
+    brain_id: UUID,
+    user_id: UUID,
+    required_roles: Optional[Union[RoleEnum, List[RoleEnum]]] = RoleEnum.Owner,
+):
+    if required_roles is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required role",
+        )
+
+    brain = Brain(id=brain_id)
+    user_brain = brain.get_brain_for_user(user_id)
+    if user_brain is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="You don't have permission for this brain",
+        )
+    if isinstance(required_roles, str):
+        required_roles = [required_roles]
+    if user_brain.get("rights") not in required_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have the required role(s) for this brain",
+        )
+```. these are all my fastapi python routes. when the user signup and login, i would like to offer 3 plans. once they choose the plan, i would like to process the payment with stripe and store subscription_type of the user. identify where the error is and give me only complete correct complete fastapi python code

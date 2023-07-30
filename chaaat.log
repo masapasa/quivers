@@ -1,0 +1,253 @@
+"/nextjs-fastapi-starter/app/explore/types.ts" ```export interface Document {
+  name: string;
+  size: string;
+}
+```
+"/nextjs-fastapi-starter/app/explore/page.tsx" ```"use client";
+import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { useEffect, useState } from "react";
+import Button from "../components/ui/Button";
+import Spinner from "../components/ui/Spinner";
+import { useSupabase } from "../supabase-provider";
+import DocumentItem from "./DocumentItem";
+import { Document } from "./types";
+import { useAxios } from "@/lib/useAxios";
+
+export default function ExplorePage() {
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [isPending, setIsPending] = useState(true);
+  const { session } = useSupabase();
+  const { axiosInstance } = useAxios();
+
+  if (session === null) {
+    redirect("/login");
+  }
+
+  useEffect(() => {
+    const fetchDocuments = async () => {
+      setIsPending(true);
+      try {
+        console.log(
+          `Fetching documents from ${process.env.NEXT_PUBLIC_BACKEND_URL}/explore`
+        );
+        const response = await axiosInstance.get<{ documents: Document[] }>(
+          "/explore"
+        );
+        setDocuments(response.data.documents);
+      } catch (error) {
+        console.error("Error fetching documents", error);
+        setDocuments([]);
+      }
+      setIsPending(false);
+    };
+    fetchDocuments();
+  }, [session.access_token]);
+
+  return (
+    <main>
+      <section className="w-full outline-none pt-32 flex flex-col gap-5 items-center justify-center p-6">
+        <div className="flex flex-col items-center justify-center">
+          <h1 className="text-3xl font-bold text-center">
+            Explore uploaded data
+          </h1>
+          <h2 className="opacity-50">
+            View or delete stored data used by your brain
+          </h2>
+        </div>
+        {isPending ? (
+          <Spinner />
+        ) : (
+          <motion.div layout className="w-full max-w-xl flex flex-col gap-5">
+            {documents.length !== 0 ? (
+              <AnimatePresence mode="popLayout">
+                {documents.map((document) => (
+                  <DocumentItem
+                    key={document.name}
+                    document={document}
+                    setDocuments={setDocuments}
+                  />
+                ))}
+              </AnimatePresence>
+            ) : (
+              <div className="flex flex-col items-center justify-center mt-10 gap-1">
+                <p className="text-center">Oh No, Your Brain is empty.</p>
+                <Link href="/upload">
+                  <Button>Upload</Button>
+                </Link>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </section>
+    </main>
+  );
+}
+```
+"/nextjs-fastapi-starter/app/explore/DocumentItem/index.tsx" ```"use client";
+import {
+  Dispatch,
+  RefObject,
+  SetStateAction,
+  forwardRef,
+  useState,
+} from "react";
+import Button from "../../components/ui/Button";
+import { AnimatedCard } from "../../components/ui/Card";
+import Modal from "../../components/ui/Modal";
+import { Document } from "../types";
+import DocumentData from "./DocumentData";
+import Chat from "../../chat/page";
+import { useSupabase } from "../../supabase-provider";
+import Ellipsis from "../../components/ui/Ellipsis";
+import { useToast } from "@/lib/hooks/useToast";
+import { useAxios } from "@/lib/useAxios";
+
+interface DocumentProps {
+  document: Document;
+  setDocuments: Dispatch<SetStateAction<Document[]>>;
+}
+
+const DocumentItem = forwardRef(
+  ({ document, setDocuments }: DocumentProps, forwardedRef) => {
+    const [isDeleting, setIsDeleting] = useState(false);
+    const [chatHistory, setChatHistory] = useState<Array<[string, string]>>([]);
+    const { publish } = useToast();
+    const { session } = useSupabase();
+    const { axiosInstance } = useAxios();
+
+    if (!session) {
+      throw new Error("Session is null");
+    }
+
+    const deleteDocument = async (name: string) => {
+      setIsDeleting(true);
+      try {
+        await axiosInstance.delete(`/explore/${name}`);
+        setDocuments((docs) => docs.filter((doc) => doc.name !== name)); // Optimistic update
+        publish({ variant: "success", text: `${name} deleted.` });
+      } catch (error) {
+        console.error(`Error deleting ${name}`, error);
+      }
+      setIsDeleting(false);
+    };
+
+    return (
+      <AnimatedCard
+        initial={{ x: -64, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 64, opacity: 0 }}
+        layout
+        ref={forwardedRef as RefObject<HTMLDivElement>}
+        className="flex flex-col sm:flex-row sm:items-center justify-between w-full p-5 gap-5"
+      >
+        <Ellipsis tooltip maxCharacters={30}>
+          {document.name}
+        </Ellipsis>
+        <div className="flex gap-2 self-end">
+          <Modal Trigger={<Button className="">View</Button>}>
+            <DocumentData documentName={document.name} />
+          </Modal>
+          <Modal
+            title={"Chat"}
+            Trigger={<Button>Chat</Button>}
+            CloseTrigger={
+              <Button onClick={() => setChatHistory([])}>Clear History</Button>
+            }
+          >
+            <Chat history={chatHistory} setHistory={setChatHistory} />
+          </Modal>
+
+          <Modal
+            title={"Confirm"}
+            desc={`Do you really want to delete?`}
+            Trigger={
+              <Button isLoading={isDeleting} variant={"danger"} className="">
+                Delete
+              </Button>
+            }
+            CloseTrigger={
+              <Button
+                variant={"danger"}
+                isLoading={isDeleting}
+                onClick={() => {
+                  deleteDocument(document.name);
+                }}
+                className="self-end"
+              >
+                Delete forever
+              </Button>
+            }
+          >
+            <p>{document.name}</p>
+          </Modal>
+        </div>
+      </AnimatedCard>
+    );
+  }
+);
+
+DocumentItem.displayName = "DocumentItem";
+export default DocumentItem;
+```
+"/nextjs-fastapi-starter/app/explore/DocumentItem/DocumentData.tsx" ```import { useEffect, useState } from "react";
+import { useSupabase } from "../../supabase-provider";
+import { useAxios } from "@/lib/useAxios";
+
+interface DocumentDataProps {
+  documentName: string;
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DocumentDetails = any;
+//TODO: review this component logic, types and purposes
+
+const DocumentData = ({ documentName }: DocumentDataProps): JSX.Element => {
+  const { session } = useSupabase();
+  const { axiosInstance } = useAxios();
+
+  const [documents, setDocuments] = useState<DocumentDetails[]>([]);
+
+  if (!session) {
+    throw new Error("User session not found");
+  }
+
+  useEffect(() => {
+    const fetchDocuments = async () => {
+      const res = await axiosInstance.get<{ documents: DocumentDetails[] }>(
+        `/explore/${documentName}`
+      );
+      setDocuments(res.data.documents);
+    };
+    fetchDocuments();
+  }, [axiosInstance, documentName]);
+
+  return (
+    <div className="prose dark:prose-invert">
+      <h1 className="text-bold text-3xl break-words">{documentName}</h1>
+      <p>No. of chunks: {documents.length}</p>
+
+      <div className="flex flex-col">
+        {documents[0] &&
+          Object.keys(documents[0]).map((doc) => {
+            return (
+              <div className="grid grid-cols-2 py-2 border-b" key={doc}>
+                <p className="capitalize font-bold break-words">
+                  {doc.replaceAll("_", " ")}
+                </p>
+                <span className="break-words my-auto">
+                  {documents[0][doc] || "Not Available"}
+                </span>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+};
+
+export default DocumentData;
+```. "./app/explore/DocumentItem/index.tsx:72:19
+Type error: Type '{ history: [string, string][]; setHistory: Dispatch<SetStateAction<[string, string][]>>; }' is not assignable to type 'IntrinsicAttributes'.
+  Property 'history' does not exist on type 'IntrinsicAttributes'." i get this error when i try to deploy the fastapi backend app with
+  nextjs frontend app to vercel. give me correct complete modified nextjs code to resolve this error

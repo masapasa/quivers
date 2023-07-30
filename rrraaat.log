@@ -1,0 +1,155 @@
+-- Existing tables from your tables.sql script
+CREATE TABLE IF NOT EXISTS users(
+    user_id UUID REFERENCES auth.users (id),
+    email TEXT,
+    date TEXT,
+    requests_count INT,
+    PRIMARY KEY (user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS chats(
+    chat_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users (id),
+    creation_time TIMESTAMP DEFAULT current_timestamp,
+    history JSONB,
+    chat_name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    message_id UUID DEFAULT uuid_generate_v4(),
+    chat_id UUID REFERENCES chats(chat_id),
+    user_message TEXT,
+    assistant TEXT,
+    message_time TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+-- ...
+
+-- New tables for Stripe integration
+CREATE TABLE IF NOT EXISTS customers (
+  id uuid references auth.users not null primary key,
+  stripe_customer_id text
+);
+
+CREATE TABLE IF NOT EXISTS products (
+  id text primary key,
+  active boolean,
+  name text,
+  description text,
+  image text,
+  metadata jsonb
+);
+
+DROP TYPE IF EXISTS pricing_type;
+CREATE TYPE pricing_type AS ENUM ('one_time', 'recurring');
+
+DROP TYPE IF EXISTS pricing_plan_interval;
+CREATE TYPE pricing_plan_interval AS ENUM ('day', 'week', 'month', 'year');
+
+CREATE TABLE IF NOT EXISTS prices (
+  id text primary key,
+  product_id text references products, 
+  active boolean,
+  description text,
+  unit_amount bigint,
+  currency text check (char_length(currency) = 3),
+  type pricing_type,
+  interval pricing_plan_interval,
+  interval_count integer,
+  trial_period_days integer,
+  metadata jsonb
+);
+
+DROP TYPE IF EXISTS subscription_status;
+CREATE TYPE subscription_status AS ENUM ('trialing', 'active', 'canceled', 'incomplete', 'incomplete_expired', 'past_due', 'unpaid', 'paused');
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id text primary key,
+  user_id uuid references auth.users not null,
+  status subscription_status,
+  metadata jsonb,
+  price_id text references prices,
+  quantity integer,
+  cancel_at_period_end boolean,
+  created timestamp with time zone default timezone('utc'::text, now()) not null,
+  current_period_start timestamp with time zone default timezone('utc'::text, now()) not null,
+  current_period_end timestamp with time zone default timezone('utc'::text, now()) not null,
+  ended_at timestamp with time zone default timezone('utc'::text, now()),
+  cancel_at timestamp with time zone default timezone('utc'::text, now()),
+  canceled_at timestamp with time zone default timezone('utc'::text, now()),
+  trial_start timestamp with time zone default timezone('utc'::text, now()),
+  trial_end timestamp with time zone default timezone('utc'::text, now())
+);
+
+import { useState } from "react";
+import { loadStripe } from '@stripe/stripe-js';
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useToast } from "@/lib/hooks/useToast";
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+
+const stripePromise = loadStripe('pk_test_...');
+
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export const useSignUp = () => {
+  const { supabase } = useSupabase();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isPending, setIsPending] = useState(false);
+  const { track } = useEventTracking();
+
+  const { publish } = useToast();
+  const handleSignUp = async () => {
+    void track("SIGNUP");
+    setIsPending(true);
+    const { error, user } = await supabase.auth.signUp({
+      email: email,
+      password: password,
+    });
+
+    if (error) {
+      console.error("Error signing up:", error.message);
+      publish({
+        variant: "danger",
+        text: `Error signing up: ${error.message}`,
+      });
+    } else {
+      // Create a new customer in Stripe
+      const stripe = await stripePromise;
+      const customer = await stripe.customers.create({ email });
+      
+      // Save the Stripe customer ID to the database
+      await supabase.from('users').update({ stripe_customer_id: customer.id }).match({ id: user.id });
+
+      // Attach a payment method to the customer
+      // ...
+
+      publish({
+        variant: "success",
+        text: "Confirmation Email sent, please check your email",
+      });
+    }
+    setIsPending(false);
+  };
+
+  return {
+    handleSignUp,
+    setEmail,
+    password,
+    setPassword,
+    isPending,
+    email,
+  };
+};
+
+To integrate Stripe payment into your Next.js frontend app, you can follow the example code you provided. The example code shows how to create a checkout session using Stripe and Supabase, and how to handle the checkout process on the frontend. You can modify the example code to fit your specific use case and requirements.
+
+Here are the steps you can follow to integrate Stripe payment into your Next.js frontend app:
+
+1. Install the necessary dependencies, such as `stripe` and `@supabase/supabase-js`.
+2. Set up a route to handle creating a checkout session, such as `/api/create-checkout-session`. In this route, you can use the `stripe` library to create a new checkout session with the desired price and quantity. You can also use Supabase to retrieve or create a customer record.
+3. On the frontend, create a button or form that allows the user to initiate the checkout process. When the user clicks the button or submits the form, send a request to your `/api/create-checkout-session` route with the necessary data, such as price and quantity.
+4. Once you receive a response from your `/api/create-checkout-session` route with a `sessionId`, use the `stripe` library on the frontend to redirect the user to the Stripe checkout page.
+5. After the user completes the checkout process, they will be redirected back to your website. You can handle any post-checkout actions, such as updating your database or displaying a confirmation message to the user.
+
+I hope this helps! Let me know if you have any further questions.

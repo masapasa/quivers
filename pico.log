@@ -1,0 +1,270 @@
+"chat_gpt_service.py" ```import json
+from input_listener import InputListener
+import struct
+import os
+import openai
+import time
+from prompt import prompt_template
+
+config = json.load(open("config.json"))
+openai.api_key = config["openai_key"]
+if "openai_org" in config:
+    openai.organization = config["openai_org"]
+
+class ChatGPTService:
+    def __init__(self, prompt=prompt_template):
+        self.history = [{"role": "system", "content": prompt}]
+
+    def send_to_chat_gpt(self, message):
+        self.history.append({"role": "user", "content": message})
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",temperature = 0.8, messages=self.history
+        )
+        self.history.append({"role": "assistant", "content": response["choices"][0]["message"]["content"]})
+        return str.strip(response["choices"][0]["message"]["content"])```"input_listener.py" ```import time
+import audioop
+import pyaudio
+import boto3
+import wave
+import uuid
+import os
+
+
+class InputListener:
+    def __init__(self, silence_threshold=75, silence_duration=1.5):
+        self.chunk = 1024
+        self.format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 16000
+        self.silence_threshold = silence_threshold
+        self.silence_duration = silence_duration
+        self.audio = pyaudio.PyAudio()
+        self.frames = []
+
+    def start(self):
+        self.stream = self.audio.open(
+            format=self.format,
+            channels=self.channels,
+            rate=self.rate,
+            input=True,
+            frames_per_buffer=self.chunk,
+        )
+
+    def stop(self):
+        self.stream.stop_stream()
+        self.stream.close()
+        self.audio.terminate()
+
+    def save_audio_to_file(self, audio_data):
+        # Generate a random file name
+        file_name = str(uuid.uuid4()) + ".wav"
+        file_path = os.path.join("", file_name)  # /path/to/save/directory', file_name)
+
+        # if the file already exists, delete it
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        # Save the audio data to the file
+        wf = wave.open(file_path, "wb")
+        wf.setnchannels(self.channels)
+        wf.setsampwidth(self.audio.get_sample_size(self.format))
+        wf.setframerate(self.rate)
+        wf.writeframes(audio_data)
+        wf.close()
+
+        return file_path
+
+    def listen(self):
+        self.start()
+        silence_start_time = None
+        print("Start recording...")
+        while True:
+            data = self.stream.read(self.chunk)
+            self.frames.append(data)
+            rms = audioop.rms(data, 2)
+            print(f"RMS: {rms}")  # Debugging print
+            if rms < self.silence_threshold:
+                if silence_start_time is None:
+                    silence_start_time = time.time()
+                elif time.time() - silence_start_time > self.silence_duration:
+                    print("Silence detected, stop recording")
+                    break
+            else:
+                silence_start_time = None
+        self.stop()
+
+        # Save the audio data to a file and return the file path
+        audio_data = b"".join(self.frames)
+        file_path = self.save_audio_to_file(audio_data)
+
+        # Clear out self.frames
+        self.frames = []
+
+        return file_path
+
+    def transcribe(self, audio_data):
+        client = boto3.client("transcribe")
+        response = client.start_transcription_job(
+            TranscriptionJobName="MyTranscriptionJob",
+            Media={"MediaFileUri": audio_data},
+            MediaFormat="wav",
+            LanguageCode="en-US",
+        )
+        while True:
+            status = client.get_transcription_job(
+                TranscriptionJobName="MyTranscriptionJob"
+            )
+            if status["TranscriptionJob"]["TranscriptionJobStatus"] in [
+                "COMPLETED",
+                "FAILED",
+            ]:
+                break
+            print("Not ready yet...")
+            time.sleep(5)
+        print(status)```"tts_service.py" ```import json
+import struct
+import os
+import time
+import boto3
+import pygame
+
+class TextToSpeechService:
+    def __init__(self):
+        config = json.load(open("config.json"))
+
+        self.polly = boto3.client('polly',
+                                    aws_access_key_id=config["aws_access_key_id"],
+                                    aws_secret_access_key=config["aws_secret_access_key"],
+                                    region_name=config["aws_region"])
+
+    def speak(self, text):
+        response = self.polly.synthesize_speech(VoiceId='Matthew',
+                                                OutputFormat='mp3',
+                                                Text=text)
+        with open('output.mp3', 'wb') as f:
+            f.write(response['AudioStream'].read())
+        pygame.mixer.init()     
+        pygame.mixer.music.load("output.mp3")
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            pass
+
+        os.remove("output.mp3")```"main.py" ```import json
+from chat_gpt_service import ChatGPTService
+from input_listener import InputListener
+import pvporcupine
+import struct
+import os
+import pyaudio
+import openai
+
+from tts_service import TextToSpeechService
+
+config = json.load(open("config.json"))
+openai.api_key = config["openai_key"]
+if "openai_org" in config:
+    openai.organization = config["openai_org"]
+
+
+class WakeWordDetector:
+    def __init__(self, library_path, model_path, keyword_paths):
+        self.chat_gpt_service = ChatGPTService()
+        pv_access_key = config["pv_access_key"]
+
+        self.handle = pvporcupine.create(
+            keywords=["picovoice"],
+            access_key=pv_access_key,
+            sensitivities=[1],
+        )
+
+        self.pa = pyaudio.PyAudio()
+        self.listener = InputListener(
+            config["silence_threshold"] if "silence_threshold" in config else 75,
+            config["silence_duration"] if "silence_duration" in config else 1.5,
+        )
+        sound_card_name = (
+            config["sound_card_name"]
+            if "sound_card_name" in config
+            else "seeed-2mic-voicecard"
+        )
+
+        print("Looking for sound card...")
+        for i in range(self.pa.get_device_count()):
+            device_info = self.pa.get_device_info_by_index(i)
+            print(device_info["name"]) 
+            if sound_card_name in device_info["name"]:
+                print("Found sound card! Using device index: %d" % i)
+                self.input_device_index = i
+                break
+        else:
+            raise Exception("Could not find sound device")
+
+        self.speech = TextToSpeechService()
+
+        self._init_audio_stream()
+
+    def _init_audio_stream(self):
+        self.audio_stream = self.pa.open(
+            rate=self.handle.sample_rate,
+            channels=1,
+            format=pyaudio.paInt16,
+            input=True,
+            frames_per_buffer=self.handle.frame_length,
+        )
+
+    def run(self):
+        try:
+            while True:
+                pcm = self.audio_stream.read(self.handle.frame_length)
+                pcm = struct.unpack_from("h" * self.handle.frame_length, pcm)
+                porcupine_keyword_index = self.handle.process(pcm)
+                if porcupine_keyword_index >= 0:
+                    print("Wake word detected!")
+                    self.audio_stream.close()
+                    self.audio_stream = None
+
+                    audio_path = self.listener.listen()
+                    print("Transcribing...")
+
+                    audio_file = open(audio_path, "rb")
+
+                    transcript = openai.Audio.translate("whisper-1", audio_file)
+                    print(transcript)
+
+                    print("Sending to chat GPT...")
+                    response = self.chat_gpt_service.send_to_chat_gpt(
+                        transcript["text"]
+                    )
+                    print(response)
+
+
+                    print("Playing response...")
+                    self.speech.speak(response)
+                    os.remove(audio_path)
+                    self._init_audio_stream()
+
+                    print("Listening for wake word...")
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if self.audio_stream is not None:
+                self.audio_stream.close()
+            if self.pa is not None:
+                self.pa.terminate()
+            self.handle.delete()
+
+
+if __name__ == "__main__":
+    library_path = "/path/to/porcupine/library"
+    model_path = "/path/to/porcupine/model"
+    keyword_paths = ["/path/to/porcupine/keyword"]
+
+    detector = WakeWordDetector(library_path, model_path, keyword_paths)
+    detector.run()```. ```POST: https://play.ht/api/v2/tts
+raw body: 
+{
+  "speed": 1,
+  "text": "This is our response",
+  "voice": "s3://voice-cloning-zero-shot/cd1e0cf3-0106-4dd2-9406-6ccea4d70cf2/kitt-voice/manifest.json"
+}```. i would like to change the output voice. the output voice should be the voice obtained from post api call to "https://play.ht/api/v2/tts" which uses custom voice. give me complete correct modified python code to use our custom voice

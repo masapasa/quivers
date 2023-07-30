@@ -1,0 +1,578 @@
+"backend/core/routes/payment_routes.py" ```from sympy import im
+import stripe
+import os
+from fastapi import APIRouter, Depends, HTTPException
+from models.users import User
+from auth import AuthBearer, get_current_user
+from pydantic import BaseModel
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+
+payment_router = APIRouter()
+
+class CreateCustomerAndSubscriptionRequest(BaseModel):
+    email: str
+    subscriptionType: str
+
+@payment_router.post("/create-customer-and-subscription", dependencies=[Depends(AuthBearer())])
+async def create_customer_and_subscription(
+    request_data: CreateCustomerAndSubscriptionRequest,
+):
+    try:
+        customer = stripe.Customer.create(
+            email=request_data.email
+        )
+        price_id = "price_1Ji8vzFm7oLwLo8u" if request_data.subscriptionType == "premium" else "price_1Ji8wGFm7oLwLo8u"
+        subscription = stripe.Subscription.create(
+            customer=customer.id,
+            items=[
+                {"price": price_id},
+            ],
+            expand=["latest_invoice.payment_intent"],
+        )
+
+        return {"customerId": customer.id, "subscriptionId": subscription.id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))```"backend/core/routes/upload_routes.py" ```from http.client import HTTPException
+import os
+from uuid import UUID
+from fastapi.responses import RedirectResponse
+
+import stripe
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
+from models.brains import Brain
+from models.files import File
+from models.settings import common_dependencies
+from models.users import User
+from utils.file import convert_bytes, get_file_size
+from utils.processors import filter_file
+
+from routes.authorizations.brain_authorization import (
+    RoleEnum,
+    validate_brain_authorization,
+)
+
+upload_router = APIRouter()
+
+
+@upload_router.post("/upload", dependencies=[Depends(AuthBearer())], tags=["Upload"])
+async def upload_file(
+    request: Request,
+    uploadFile: UploadFile,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    enable_summarization: bool = False,
+    current_user: User = Depends(get_current_user),
+):
+    validate_brain_authorization(
+        brain_id, current_user.id, [RoleEnum.Editor, RoleEnum.Owner]
+    )
+
+    brain = Brain(id=brain_id)
+    commons = common_dependencies()
+
+    if request.headers.get("Openai-Api-Key"):
+        brain.max_brain_size = int(os.getenv("MAX_BRAIN_SIZE_WITH_KEY", 209715200))
+
+    remaining_free_space = brain.remaining_brain_size
+
+    file_size = get_file_size(uploadFile)
+
+    file = File(file=uploadFile)
+    if remaining_free_space - file_size < 0:
+        message = {
+            "message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}",
+            "type": "error",
+        }
+    else:
+        message = await filter_file(
+            commons,
+            file,
+            enable_summarization,
+            brain_id=brain_id,
+            openai_api_key=request.headers.get("Openai-Api-Key", None),
+        )
+
+    return message
+
+
+@upload_router.post("/create-checkout-session", dependencies=[Depends(AuthBearer())], tags=["Upload"])
+async def create_checkout_session(
+    request: Request,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    current_user: User = Depends(get_current_user),
+):
+    validate_brain_authorization(
+        brain_id, current_user.id, [RoleEnum.Editor, RoleEnum.Owner]
+    )
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": "Brain upload",
+                        },
+                        "unit_amount": 2000,
+                    },
+                    "quantity": 1,
+                },
+            ],
+            mode="payment",
+        )
+        return RedirectResponse(url=checkout_session.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))``` "backend/core/routes/brain_routes.py" ```from uuid import UUID
+
+from pydantic import BaseModel
+
+from auth import AuthBearer, get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from logger import get_logger
+from models.brains import (
+    Brain,
+    get_default_user_brain,
+    get_default_user_brain_or_create_new,
+)
+from models.settings import BrainRateLimiting, common_dependencies
+from models.users import User
+
+from routes.authorizations.brain_authorization import has_brain_authorization
+from enum import Enum
+
+logger = get_logger(__name__)
+
+brain_router = APIRouter()
+class SubscriptionType(str, Enum):
+    FREE = 'free'
+    PREMIUM = 'premium'
+    GOLD = 'gold'
+class User(BaseModel):
+    id: UUID
+    email: str
+    hashed_password: str
+    subscription_type: SubscriptionType
+
+def has_made_payment(user: User) -> bool:
+    return True
+@brain_router.post("/brains/", dependencies=[Depends(AuthBearer())], tags=["Brain"])
+async def create_brain_endpoint(
+    brain: Brain,
+    current_user: User = Depends(get_current_user),
+):
+    if not has_made_payment(current_user):
+        raise HTTPException(status_code=402, detail="Payment required")
+    user_brains = brain.get_user_brains(current_user.id)
+    max_brains = {
+        'free': 11,
+        'premium': 55,
+        'gold': float('inf')
+    }[current_user.subscription_type]
+    
+    if len(user_brains) >= max_brains:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum number of brains reached ({max_brains}).",
+        )
+    brain.create_brain()
+    default_brain = get_default_user_brain(current_user)
+    if default_brain:
+        logger.info(f"Default brain already exists for user {current_user.id}")
+        brain.create_brain_user(
+            user_id=current_user.id, rights="Owner", default_brain=False
+        )
+    else:
+        logger.info(
+            f"Default brain does not exist for user {current_user.id}. It will be created."
+        )
+        brain.create_brain_user(
+            user_id=current_user.id, rights="Owner", default_brain=True
+        )
+
+    return {
+        "id": brain.id,
+        "name": brain.name,
+        "rights": "Owner",
+    }
+@brain_router.get(
+    "/brains/default/", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def get_default_create_(current_user: User = Depends(get_current_user)):
+    brain = get_default_user_brain_or_create_new(current_user)
+    return {"id": brain.id, "name": brain.name, "rights": "Owner"}
+@brain_router.get(
+    "/brains/{brain_id}/",
+    dependencies=[Depends(AuthBearer()), Depends(has_brain_authorization())],
+    tags=["Brain"],
+)
+async def create_(
+    brain: Brain,
+    current_user: User = Depends(get_current_user),
+):
+    if not has_made_payment(current_user):
+        raise HTTPException(status_code=402, detail="Payment required")
+    brain = Brain()
+    user_brains = brain.get_user_brains(current_user.id)
+    max_brains = {
+        'free': 1,
+        'premium': 5,
+        'gold': float('inf')
+    }[current_user.subscription_type]
+    
+    if len(user_brains) >= max_brains:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum number of brains reached ({max_brains}).",
+        )
+    else:
+        return {"id": brain.id, "name": brain.name, "rights": "Owner"}
+@brain_router.get(
+    "/brains/default/", dependencies=[Depends(AuthBearer())], tags=["Brain"]
+)
+async def get_default_brain_endpoint(current_user: User = Depends(get_current_user)):
+    brain = get_default_user_brain_or_create_new(current_user)
+    return {"id": brain.id, "name": brain.name, "rights": "Owner"}
+@brain_router.put(
+    "/brains/{brain_id}/",
+    dependencies=[
+        Depends(
+            AuthBearer(),
+        ),
+        Depends(has_brain_authorization()),
+    ],
+    tags=["Brain"],
+)
+async def update_brain_endpoint(
+    brain_id: UUID,
+    input_brain: Brain,
+):
+    commons = common_dependencies()
+    brain = Brain(id=brain_id)
+    if brain.file_sha1:
+        brain.update_brain_with_file(
+            file_sha1=input_brain.file_sha1
+        )
+
+    brain.update_brain_fields(commons, brain)
+    return {"message": f"Brain {brain_id} has been updated."}```. this is the fastapi python backend code for signing up premium and gold users with stripe payment. "frontend/app/(auth)/signup/hooks/useSignUp.ts" ```// frontend/app/(auth)/signup/hooks/useSignUp.ts
+
+import { useState } from "react";
+
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useToast } from "@/lib/hooks/useToast";
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export const useSignUp = () => {
+  const { supabase } = useSupabase();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [subscriptionType, setSubscriptionType] = useState("free");
+  const [isPending, setIsPending] = useState(false);
+  const { track } = useEventTracking();
+
+  const { publish } = useToast();
+  const handleSignUp = async () => {
+    void track("SIGNUP");
+    setIsPending(true);
+    let customerId;
+    let subscriptionId;
+    try {
+      const response = await fetch("/api/create-customer-and-subscription", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          subscriptionType,
+        }),
+      });
+      const data = await response.json();
+      customerId = data.customerId;
+      subscriptionId = data.subscriptionId;
+    } catch (error) {
+      console.error("Error creating customer and subscription:", error);
+      publish({
+        variant: "danger",
+        text: `Error creating customer and subscription: ${error.message}`,
+      });
+      setIsPending(false);
+      return;
+    }
+    const { error } = await supabase.auth.signUp(
+      {
+        email: email,
+        password: password,
+      },
+      {
+        data: {
+          subscription_type: subscriptionType,
+          stripe_customer_id: customerId,
+          stripe_subscription_id: subscriptionId,
+        },
+      }
+    );
+
+    if (error) {
+      console.error("Error signing up:", error.message);
+      publish({
+        variant: "danger",
+        text: `Error signing up: ${error.message}`,
+      });
+    } else {
+      publish({
+        variant: "success",
+        text: "Confirmation Email sent, please check your email",
+      });
+    }
+    setIsPending(false);
+  };
+
+  return {
+    handleSignUp,
+    setEmail,
+    password,
+    setPassword,
+    isPending,
+    email,
+    subscriptionType,
+    setSubscriptionType,
+  };
+};```"frontend/app/(auth)/signup/page.tsx" ```/* eslint-disable */
+"use client";
+import Link from "next/link";
+import { CardElement, useElements, useStripe, Elements } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
+
+import Button from "@/lib/components/ui/Button";
+import Card from "@/lib/components/ui/Card";
+import Field from "@/lib/components/ui/Field";
+import PageHeading from "@/lib/components/ui/PageHeading";
+import { useSignUp } from "./hooks/useSignUp";
+
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || "default_value_here");
+
+function SignUpForm() {
+    const {
+      handleSignUp,
+      isPending,
+      email,
+      password,
+      setEmail,
+      setPassword,
+      subscriptionType,
+      setSubscriptionType,
+      setPaymentMethodId,
+    } : {
+      handleSignUp: () => Promise<void>,
+      isPending: boolean,
+      email: string,
+      password: string,
+      setEmail: Dispatch<SetStateAction<string>>,
+      setPassword: Dispatch<SetStateAction<string>>,
+      subscriptionType: string,
+      setSubscriptionType: Dispatch<SetStateAction<string>>,
+      setPaymentMethodId: Dispatch<SetStateAction<string>>,
+    } = useSignUp();
+    const stripe = useStripe();
+    const elements = useElements();
+
+    const handlePayment = async () => {
+      if (!stripe || !elements) {
+        return;
+      }
+
+      const cardElement = elements.getElement(CardElement);
+      if (!cardElement) {
+        return;
+      }
+
+      const { error, paymentMethod } = await stripe.createPaymentMethod({
+        type: "card",
+        card: cardElement,
+      });
+
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      setPaymentMethodId(paymentMethod.id);
+    };
+
+    return (
+      <main data-testid="sign-up-page">
+        <section className="min-h-[80vh] w-full h-full outline-none flex flex-col gap-5 items-center justify-center p-6">
+          <PageHeading title="Sign Up" subtitle="Create your account" />
+          <Card className="max-w-md w-full p-5 sm:p-10 text-left">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSignUp();
+              }}
+              className="flex flex-col gap-2"
+              data-testid="sign-up-form"
+            >
+              <Field
+                name="email"
+                required
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                data-testid="email-field"
+              />
+              <Field
+                name="password"
+                required
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                data-testid="password-field"
+              />
+              <div className="flex flex-col items-center justify-center mt-2 gap-2">
+                <label htmlFor="subscription-type">Choose a plan:</label>
+                <select
+                  id="subscription-type"
+                  value={subscriptionType}
+                  onChange={(e) => setSubscriptionType(e.target.value)}
+                >
+                  <option value="free">Free</option>
+                  <option value="premium">Premium</option>
+                  <option value="gold">Gold</option>
+                </select>
+              </div>
+              {subscriptionType !== "free" && (
+                <>
+                  <CardElement />
+                <Button onClick={() => handlePayment()}>Save Payment Information</Button>
+              </>
+            )}
+            <Button data-testid="sign-up-button" isLoading={isPending}>
+              Sign Up
+            </Button>
+            <Link href="/login">Already registered? Sign in</Link>
+          </form>
+        </Card>
+      </section>
+    </main>
+  );
+}
+
+export default function SignUp() {
+  return (
+    <Elements stripe={stripePromise}>
+      <SignUpForm />
+    </Elements>
+  );
+}```"frontend/lib/api/create-customer-and-subscription.ts" ```import axios from "axios";
+import type { NextApiRequest, NextApiResponse } from "next";
+
+type CreateCustomerAndSubscriptionRequest = {
+  email: string;
+  subscriptionType: string;
+};
+export const handler = async (
+  req: NextApiRequest,
+  res: NextApiResponse
+): Promise<void> => {
+  const { email, subscriptionType } = req.body as CreateCustomerAndSubscriptionRequest;
+  try {
+    const response = await axios.post(
+      `$/create-customer-and-subscription`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          subscriptionType,
+        }),
+      }
+    );
+    const data = await response.json();
+    res.status(200).json(data);
+  } catch (error) {
+    console.error("Error creating customer and subscription:", error);
+    res.status(500).json({ error: error.message });
+  }
+}```. this is the nextjs javascript frontend code for signing up premium and gold users with stripe payment. "POST https://merchant-ui-api.stripe.com/elements/wallet-config net::ERR_FAILED 401
+(anonymous) @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+e @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+l @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+s @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+e @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+value @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+RETRIEVE_LINK_CONFIG @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+(anonymous) @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+value @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+value @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+(anonymous) @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+postMessage (async)
+i @ shared-96654a2842dcc…49d7308a9bba88.js:1
+value @ shared-96654a2842dcc…49d7308a9bba88.js:1
+(anonymous) @ shared-96654a2842dcc…49d7308a9bba88.js:1
+" "POST https://api.stripe.com/v1/payment_methods 401
+(anonymous) @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+e @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+l @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+s @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+e @ shared-96654a2842dccdd7aa49d7308a9bba88.js:1
+ts @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+value @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+(anonymous) @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+Promise.then (async)
+createPaymentMethodWithElement @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+(anonymous) @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+(anonymous) @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+Promise.then (async)
+value @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+handleAction @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+value @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+(anonymous) @ controller-d92a915b861f12abe2128e009ea2af15.js:1
+" "POST http://localhost:3000/api/create-customer-and-subscription 404 (Not Found)
+handleSignUp @ VM920 useSignUp.ts:31
+onSubmit @ VM917 page.tsx:70
+callCallback @ react-dom.development.js:19437
+invokeGuardedCallbackImpl @ react-dom.development.js:19486
+invokeGuardedCallback @ react-dom.development.js:19561
+invokeGuardedCallbackAndCatchFirstError @ react-dom.development.js:19575
+executeDispatch @ react-dom.development.js:30600
+processDispatchQueueItemsInOrder @ react-dom.development.js:30632
+processDispatchQueue @ react-dom.development.js:30645
+dispatchEventsForPlugins @ react-dom.development.js:30656
+eval @ react-dom.development.js:30846
+batchedUpdates$1 @ react-dom.development.js:23743
+batchedUpdates @ react-dom.development.js:27562
+dispatchEventForPluginEventSystem @ react-dom.development.js:30845
+dispatchEvent @ react-dom.development.js:28618
+dispatchDiscreteEvent @ react-dom.development.js:28589
+" "Error creating customer and subscription: SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+window.console.error @ app-index.js:32
+handleSignUp @ VM920 useSignUp.ts:45
+await in handleSignUp (async)
+onSubmit @ VM917 page.tsx:70
+callCallback @ react-dom.development.js:19437
+invokeGuardedCallbackImpl @ react-dom.development.js:19486
+invokeGuardedCallback @ react-dom.development.js:19561
+invokeGuardedCallbackAndCatchFirstError @ react-dom.development.js:19575
+executeDispatch @ react-dom.development.js:30600
+processDispatchQueueItemsInOrder @ react-dom.development.js:30632
+processDispatchQueue @ react-dom.development.js:30645
+dispatchEventsForPlugins @ react-dom.development.js:30656
+eval @ react-dom.development.js:30846
+batchedUpdates$1 @ react-dom.development.js:23743
+batchedUpdates @ react-dom.development.js:27562
+dispatchEventForPluginEventSystem @ react-dom.development.js:30845
+dispatchEvent @ react-dom.development.js:28618
+dispatchDiscreteEvent @ react-dom.development.js:28589
+". these are some of the error i receive in the browser console. identify if the error is in the fastapi python backend or nextjs javascript frontend. give me only complete correct modified code for the fastapi python backend and nextjs javascript frontend

@@ -1,0 +1,171 @@
+"app/chat/hooks/useQuestion.ts" ```import { useEffect, useState } from "react";
+
+import { useSupabase } from "@/app/supabase-provider";
+import { useBrainConfig } from "@/lib/context/BrainConfigProvider/hooks/useBrainConfig";
+import { useAxios } from "@/lib/useAxios";
+import { redirect } from "next/navigation";
+
+export const useQuestion = (setHistory: (history: Array<[string, string]>) => void) => {
+  const [question, setQuestion] = useState("");
+  const [isPending, setIsPending] = useState(false);
+  const { session } = useSupabase();
+  const { axiosInstance } = useAxios();
+  const {
+    config: { maxTokens, model, temperature },
+  } = useBrainConfig();
+  if (session === null) {
+    redirect("/login");
+  }
+
+  useEffect(()=>{
+    (async ()=>{
+      const localHistory = await localStorage.getItem('history')
+      if(localHistory){
+        setHistory(JSON.parse(localHistory))
+      }
+    })()
+  }, [])
+  
+  const askQuestion = async (history: Array<[string, string]>) => {
+    history = [...history, ["user", question]];
+    setIsPending(true);
+
+    const response = await axiosInstance.post(`/chat/`, {
+      model,
+      question,
+      history,
+      temperature,
+      max_tokens: maxTokens,
+    });
+    setHistory(response.data.history);
+    localStorage.setItem('history', JSON.stringify(response.data.history))
+    setQuestion("");
+    setIsPending(false);
+  };
+
+  const resetHistory = () => {
+    localStorage.setItem('history', JSON.stringify([]))
+    setHistory([])
+  }
+  return {
+    isPending,
+    question,
+    setQuestion,
+    resetHistory,
+    askQuestion,
+  };
+};``` "app/chat/page.tsx" ```"use client";
+import Link from "next/link";
+import { MdAutorenew, MdMic, MdMicOff, MdSettings } from "react-icons/md";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import PageHeading from "../components/ui/PageHeading";
+import ChatMessages from "./components/ChatMessages";
+import { useQuestion } from "./hooks/useQuestion";
+import { useSpeech } from "./hooks/useSpeech";
+import { Dispatch, SetStateAction, useState } from "react";
+interface ChatProps {
+  history: Array<[string, string]>;
+  setHistory: Dispatch<SetStateAction<[string, string][]>>;
+}
+export default function ChatPage() {
+  const [history, setHistory] = useState<Array<[string, string]>>([]);
+  const {isPending, question, askQuestion, setQuestion, resetHistory } =
+    useQuestion(setHistory);
+  const {isListening, speechSupported, startListening } = useSpeech();
+  return (
+    <main className="min-h-0 w-full flex flex-col pt-32 flex-1 overflow-hidden">
+      <section className="flex flex-col justify-center items-center gap-5 h-full overflow-auto style={{ marginBottom: '20px'}}">
+        <PageHeading
+          title="Chat with your brain"
+          subtitle="Talk to a language model about your uploaded data"
+        />
+        <Card className="p-5 max-w-3xl w-full flex-1 mb-24 overflow-auto flex flex-col">
+          <ChatMessages history={history} />
+        </Card>
+        <Card className="fixed left-1/2 w-full max-w-3xl bg-gray-100 dark:bg-gray-800 -translate-x-1/2 bottom-16 px-5 py-5 mb-5">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!isPending) askQuestion();
+            }}
+            className="w-full flex items-center justify-center gap-2"
+          >
+            <textarea
+              autoFocus
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!isPending) askQuestion();
+                }
+              }}
+              className="w-full p-2 border border-gray-300 dark:border-gray-500 outline-none rounded dark:bg-gray-800"
+              placeholder="Begin conversation here..."
+            />
+            <Button type="submit" isLoading={isPending}>
+              {isPending ? "Thinking..." : "Chat"}
+            </Button>
+            <Button
+              className="px-3"
+              variant={"tertiary"}
+              type="button"
+              onClick={resetHistory}
+              disabled={isPending}
+            >
+              <MdAutorenew className="text-2xl" />
+            </Button>
+            <Button
+              className="px-3"
+              variant={"tertiary"}
+              type="button"
+              onClick={startListening}
+              disabled={!speechSupported}
+            >
+              {isListening ? (
+                <MdMicOff className="text-2xl" />
+              ) : (
+                <MdMic className="text-2xl" />
+              )}
+            </Button>
+            <Link href={"/config"}>
+              <Button className="px-3" variant={"tertiary"}>
+                <MdSettings className="text-2xl" />
+              </Button>
+            </Link>
+          </form>
+        </Card>
+      </section>
+    </main>
+  );
+}```. " Runtime Error
+TypeError: setHistory is not a function
+
+Source
+app/chat/hooks/useQuestion.ts (24:8) @ setHistory
+
+  22 |     const localHistory = await localStorage.getItem('history')
+  23 |     if(localHistory){
+> 24 |       setHistory(JSON.parse(localHistory))
+     |      ^
+  25 |     }
+  26 |   })()
+  27 | }, [])". "useQuestion.ts:24  Uncaught (in promise) TypeError: setHistory is not a function
+    at eval (webpack-internal:///(app-client)/./app/chat/hooks/useQuestion.ts:30:17)". i have already done that. i get additional error when i press the chat button. "useQuestion.ts:30  Uncaught (in promise) TypeError: history is not iterable
+    at askQuestion (webpack-internal:///(app-client)/./app/chat/hooks/useQuestion.ts:36:16)
+    at onKeyDown (webpack-internal:///(app-client)/./app/chat/page.tsx:76:57)
+    at HTMLUnknownElement.callCallback (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:19437:14)
+    at Object.invokeGuardedCallbackImpl (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:19486:16)
+    at invokeGuardedCallback (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:19561:29)
+    at invokeGuardedCallbackAndCatchFirstError (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:19575:25)
+    at executeDispatch (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:30600:3)
+    at processDispatchQueueItemsInOrder (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:30632:7)
+    at processDispatchQueue (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:30645:5)
+    at dispatchEventsForPlugins (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:30656:3)
+    at eval (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:30846:12)
+    at batchedUpdates$1 (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:23743:12)
+    at batchedUpdates (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:27562:12)
+    at dispatchEventForPluginEventSystem (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:30845:3)
+    at dispatchEvent (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:28618:5)
+    at dispatchDiscreteEvent (webpack-internal:///(app-client)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:28589:5)". give me correct complete modified code to resolve this error

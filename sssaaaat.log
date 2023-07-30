@@ -1,0 +1,918 @@
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/config.py" ```
+from pydantic import BaseSettings
+
+class Settings(BaseSettings):
+    debug: bool = False
+    secret_key: str = 'S#perS3crEt_9999'
+    server_address: str = 'http://localhost:8000/'
+    
+    stripe_secret_key: str = None
+    stripe_publishable_key: str = None
+    stripe_is_active: bool = False
+    stripe_client_id: str = None
+    stripe_oauth_redirect: str = None
+
+    def __init__(self):
+        super().__init__()
+        self.check_stripe()
+
+    def check_stripe(self):
+        if self.stripe_secret_key and self.stripe_publishable_key:
+            self.stripe_is_active = True
+
+
+    class Config:
+        env_file = "./.env"
+
+
+settings = Settings()
+```
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/schemas.py" ```
+from pydantic import BaseModel
+
+class ProductBase(BaseModel):
+    name: str
+    price: int
+    currency: str
+    info: str
+    short_description: str
+    full_description: str
+    
+
+class Product(ProductBase):
+    slug: str
+    class Config:
+        orm_mode = True
+```
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/app.py" ```# -*- encoding: utf-8 -*-
+"""
+Copyright (c) 2019 - present AppSeed.us
+"""
+
+from itertools import product
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from src.config import settings
+from src.routers.ui_routes import router as ui_router
+from src.routers.products import router as product_router
+from src.routers.auth import router as auth_router
+
+if (settings.debug=='True'):
+    app = FastAPI(debug=True, reload=True)
+else:
+    app = FastAPI()
+
+app.mount("/static", StaticFiles(directory="src/static"), name="static")
+
+app.include_router(ui_router)
+app.include_router(product_router)
+app.include_router(auth_router)```
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/routers/ui_routes.py" ```# -*- encoding: utf-8 -*-
+"""
+Copyright (c) 2019 - present AppSeed.us
+"""
+
+from fastapi import APIRouter, Request, status, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from pathlib import Path
+from src.config import settings
+import http3
+import stripe
+import json
+
+
+from src import app, schemas
+
+router = APIRouter(
+    tags = ['User Interface']
+)
+
+BASE_PATH = Path(__file__).resolve().parent
+TEMPLATES = Jinja2Templates(directory=str(BASE_PATH / "../templates"))
+
+# Stripe Credentials
+stripe_keys = {
+    "secret_key"     : settings.stripe_secret_key,
+    "publishable_key": settings.stripe_publishable_key,
+    "endpoint_secret": settings.stripe_secret_key
+}
+
+
+
+@router.get("/", status_code=status.HTTP_200_OK)
+async def index(request: Request, response_model=HTMLResponse):
+    return TEMPLATES.TemplateResponse("pages/index.html", {"request" : request})
+
+@router.get("/products/", status_code=status.HTTP_200_OK)
+async def products_index(request: Request, response_model=HTMLResponse):
+    featured_product_slug = 'featured'
+    base_url = request.base_url
+    product_url = app.product_router.url_path_for("get_product_by_slug", slug=featured_product_slug)
+    request_url = base_url.__str__() + product_url.__str__()[1:]
+
+    http3client = http3.AsyncClient()
+    response = await http3client.get(request_url)
+
+    featured_product = response.json()
+
+    products_url = app.product_router.url_path_for("get_products")
+    request_url2 = base_url.__str__() + products_url.__str__()[1:]
+
+    http3client = http3.AsyncClient()
+    response = await http3client.get(request_url2)
+
+    products = response.json()
+    for i,product in enumerate(products):
+        if (product['slug']==featured_product_slug):
+            del products[i]
+
+    access_key = request.cookies.get('Stripe-Account')
+
+    if (access_key):
+        # print ('here is where we can determine if local products or stripe products get loaded')
+        stripe.api_key = access_key
+        # stripe.
+
+        json_data = []
+        products = stripe.Product.list(expand = ['data.default_price'])
+        print ('\n\n')
+        print (products)
+        print ('\n\n')
+        productdict = []
+        for product in products:
+            dict= {}
+            dict['id'] = product['id']
+            dict['name'] = product['name']
+            dict['price'] = product["default_price"]["unit_amount"]/100
+            dict['currency'] = product["default_price"]["currency"]
+            dict['full_description'] = product["description"]
+            dict['info'] = product["description"][0:30]
+
+            for index, image in enumerate(product['images']):
+                dict['img_main'] = image
+
+            dict['img_card'] = ''
+            dict['img_1'] = ''
+            dict['img_2'] = ''
+            dict['img_3'] = ''
+
+            productdict.append(dict)
+        
+        for product in productdict:
+            json_product = json.dumps( product, indent=4, separators=(',', ': ') )
+            json_data.append(json_product)
+
+    return TEMPLATES.TemplateResponse("ecommerce/index.html", {
+        "request" : request,
+        "featured_product" : featured_product,
+        "products": products,
+    })
+
+@router.get("/products/{product_slug}", status_code=status.HTTP_200_OK)
+async def product_info(product_slug: str, request: Request, response_model=HTMLResponse):
+    base_url = request.base_url
+    product_url = app.product_router.url_path_for("get_product_by_slug", slug=product_slug)
+    request_url = base_url.__str__() + product_url.__str__()[1:]
+
+    http3client = http3.AsyncClient()
+    response = await http3client.get(request_url)
+
+    if (response.status_code==404):
+        redirect = RedirectResponse(url=router.url_path_for('products_index'))
+        return redirect
+
+    product = response.json()
+
+    return TEMPLATES.TemplateResponse("ecommerce/template.html", {
+        "request" : request,
+        "product": product,
+        "config" : settings
+    })
+
+@router.get("/config")
+def get_publishable_key():
+    stripe_config = {"publicKey" : stripe_keys["publishable_key"]}
+    return stripe_config
+
+@router.get("/success")
+def success(request: Request):
+    return TEMPLATES.TemplateResponse("ecommerce/payment-success.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get("/cancelled")
+def cancelled(request: Request):
+    return TEMPLATES.TemplateResponse("ecommerce/payment-cancelled.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+
+@router.get("/create-checkout-session/{path}/")
+async def create_checkout_session(path, request: Request):
+    base_url = request.base_url
+    product_url = app.product_router.url_path_for("get_product_by_slug", slug=path)
+    request_url = base_url.__str__() + product_url.__str__()[1:]
+
+    http3client = http3.AsyncClient()
+    response = await http3client.get(request_url)
+
+    product = response.json()
+
+
+    domain_url = settings.server_address
+    stripe.api_key = stripe_keys["secret_key"]
+
+    try:
+
+        checkout_session = stripe.checkout.Session.create(
+            success_url=domain_url + "success?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=domain_url + "cancelled",
+            payment_method_types=["card"],
+            mode="payment",
+            line_items=[
+                {
+                    "name": product['name'],
+                    "quantity": 1,
+                    "currency": 'usd',
+                    "amount": product['price'] * 100,
+                }
+            ]
+        )
+        return ({"sessionId": checkout_session["id"]})
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='There was an error with the stripe session')
+        
+
+@router.get("/success")
+def success(request: Request):
+    return TEMPLATES.TemplateResponse("ecommerce/payment-success.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get("/presentation")
+def presentation(request: Request):
+    return TEMPLATES.TemplateResponse("pages/presentation.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+
+@router.get("/page-about-us")
+def page_about_us(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-about-us.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+
+@router.get('/page-contact-us')
+def page_contact_us(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-contact-us.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/page-author')
+def page_author(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-author.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/page-sign-in')
+def page_sign_in(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-sign-in.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/page-sign-up')
+def page_sign_up(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-sign-up.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/page-404')
+def page_404(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-404.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/page-sections-hero-sections')
+def page_sections_hero_sections(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-sections-hero-sections.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/page-sections-features')
+def page_sections_features(request: Request):
+    return TEMPLATES.TemplateResponse("pages/page-sections-features.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/navigation-navbars')
+def navigation_navbars(request: Request):
+    return TEMPLATES.TemplateResponse("pages/navigation-navbars.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/navigation-nav-tabs')
+def navigation_nav_tabs(request: Request):
+    return TEMPLATES.TemplateResponse("pages/navigation-nav-tabs.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/navigation-pagination')
+def navigation_pagination(request: Request):
+    return TEMPLATES.TemplateResponse("pages/navigation-pagination.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/input-areas-inputs')
+def input_areas_inputs(request: Request):
+    return TEMPLATES.TemplateResponse("pages/input-areas-inputs.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/input-areas-forms')
+def input_areas_forms(request: Request):
+    return TEMPLATES.TemplateResponse("pages/input-areas-forms.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/attention-catchers-alerts')
+def attention_catchers_alerts(request: Request):
+    return TEMPLATES.TemplateResponse("pages/attention-catchers-alerts.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/attention-catchers-modals')
+def attention_catchers_modals(request: Request):
+    return TEMPLATES.TemplateResponse("pages/attention-catchers-modals.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/attention-catchers-tooltips-popovers')
+def attention_catchers_tooltips_popovers(request: Request):
+    return TEMPLATES.TemplateResponse("pages/attention-catchers-tooltips-popovers.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-buttons')
+def elements_buttons(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-buttons.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-avatars')
+def elements_avatars(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-avatars.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-dropdowns')
+def elements_dropdowns(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-dropdowns.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-toggles')
+def elements_toggles(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-toggles.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-breadcrumbs')
+def elements_breadcrumbs(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-breadcrumbs.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-badges')
+def elements_badges(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-badges.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-typography')
+def elements_typography(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-typography.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+@router.get('/elements-progress-bars')
+def elements_progress_bars(request: Request):
+    return TEMPLATES.TemplateResponse("pages/elements-progress-bars.html", {
+        "request" : request,
+        "config" : settings
+    })
+
+```
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/routers/auth.py" ```import stripe
+from fastapi import APIRouter, HTTPException, status, Request
+from fastapi.responses import RedirectResponse
+from src import app
+from src.config import settings
+
+router = APIRouter(
+    prefix = "/auth",
+    tags = ['Auth']
+)
+
+# Stripe Credentials
+stripe_keys = {
+    "secret_key"     : settings.stripe_secret_key,
+    "publishable_key": settings.stripe_publishable_key,
+    "endpoint_secret": settings.stripe_secret_key
+}
+
+stripe.api_key = stripe_keys["secret_key"]  
+
+@router.get("/stripe_login")
+def stripe_login(request: Request):
+    if not settings.stripe_client_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing a Required Credential, Stripe Client ID, check your environment variables")
+
+    stripe_login_url = f'https://connect.stripe.com/oauth/authorize?response_type=code&client_id={settings.stripe_client_id}&scope=read_write&redirect_uri={settings.stripe_oauth_redirect}'
+    redirect = RedirectResponse(url=stripe_login_url)
+
+    return redirect
+
+@router.get("/login")
+def authorize_stripe(request: Request):
+    authorization_code = request.query_params.get('code')
+    try:
+        response = stripe.OAuth.token(
+            grant_type='authorization_code',
+            code=authorization_code,
+        )
+        
+        stripe_user_id = response['stripe_user_id']
+        access_token = response['access_token']
+
+        redirect = RedirectResponse(url=app.ui_router.url_path_for('products_index'))
+        redirect.status_code = 302
+        redirect.set_cookie('Stripe-Account', access_token)
+        redirect.set_cookie('Stripe-User-ID', stripe_user_id)
+
+        return redirect
+    except Exception as e:
+        print (e)
+        print ('login error')
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Missing Authorization Code")
+
+@router.get("/logout")
+def deauthorize_stripe(request: Request):
+    try:
+        stripe_user_id = request.cookies.get('Stripe-User-ID')
+        access_key = request.cookies.get('Stripe-Account')
+
+        if (not stripe_user_id or not access_key):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="TYou are not logged in")
+
+        stripe.api_key = stripe_keys['secret_key']
+
+        stripe.OAuth.deauthorize(
+            client_id=settings.stripe_client_id,
+            stripe_user_id=stripe_user_id
+        )
+
+        redirect = RedirectResponse(url=app.ui_router.url_path_for('index'))
+        redirect.status_code = 302
+        redirect.set_cookie('Stripe-Account', '')
+        redirect.set_cookie('Stripe-User-ID', '')
+
+        return redirect
+    except Exception as e:
+        print (e)
+        # request.cookies.update()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization Code")
+```
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/routers/products.py" ```# -*- encoding: utf-8 -*-
+"""
+Copyright (c) 2019 - present AppSeed.us
+"""
+
+from fastapi import APIRouter, HTTPException, status
+from typing import List
+
+from src import schemas
+from src.helpers.utils import get_local_products
+
+router = APIRouter(
+    prefix = "/api/products",
+    tags = ['Products']
+)
+
+@router.get("/", response_model=List[schemas.Product])
+async def get_products():
+    
+    products = get_local_products()
+
+    if not products:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Product Was Not Found')
+
+    return products
+
+
+@router.get("/{slug}", response_model=schemas.Product)
+async def get_product_by_slug(slug: str):
+
+    products = get_local_products()
+
+    if not products:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product was not found")
+
+    for product in products:
+        if product['slug']==slug:
+            return product
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product was not found")
+
+```
+"/Users/aswin/Documents/ecommerce-fastapi-stripe/src/helpers/utils.py" ```import json
+from os import path, listdir
+from venv import create
+
+from src import schemas 
+
+def create_slug(json_file_name):
+    filename, _blank = json_file_name.split('.json')
+    return filename
+
+def get_local_products():
+    products_path = path.expanduser('./src/templates/products')
+    products = listdir(products_path)
+
+    product_dicts = []
+    for product in products:
+        absolute_path = path.join(products_path, product)
+
+        with open(absolute_path, 'r') as product_json:
+            data = json.load(product_json)
+            try:
+                product_slug = create_slug(product)
+                data['slug'] = product_slug
+                verify_product = schemas.ProductBase(**data)
+                product_dicts.append(data)
+            
+            except Exception as e:
+                print( 'Err: ' + str(e) )
+                continue
+
+    return product_dicts
+
+```. this is the code for stripe integration in fastapi from another ecommerce project. use this as reference to implement stripe payment in my fastapi python bacend.
+
+"scripts/tables.sql" ```CREATE TABLE IF NOT EXISTS users(
+    user_id UUID REFERENCES auth.users (id),
+    email TEXT,
+    date TEXT,
+    requests_count INT,
+    PRIMARY KEY (user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS chats(
+    chat_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users (id),
+    creation_time TIMESTAMP DEFAULT current_timestamp,
+    history JSONB,
+    chat_name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    message_id UUID DEFAULT uuid_generate_v4(),
+    chat_id UUID REFERENCES chats(chat_id),
+    user_message TEXT,
+    assistant TEXT,
+    message_time TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS vectors (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536)
+);
+
+CREATE OR REPLACE FUNCTION match_vectors(query_embedding VECTOR(1536), match_count INT, p_brain_id UUID)
+RETURNS TABLE(
+    id UUID,
+    brain_id UUID,
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536),
+    similarity FLOAT
+) LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        vectors.id,
+        brains_vectors.brain_id,
+        vectors.content,
+        vectors.metadata,
+        vectors.embedding,
+        1 - (vectors.embedding <=> query_embedding) AS similarity
+    FROM
+        vectors
+    INNER JOIN
+        brains_vectors ON vectors.id = brains_vectors.vector_id
+    WHERE brains_vectors.brain_id = p_brain_id
+    ORDER BY
+        vectors.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS stats (
+    time TIMESTAMP,
+    chat BOOLEAN,
+    embedding BOOLEAN,
+    details TEXT,
+    metadata JSONB,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    id BIGSERIAL PRIMARY KEY,
+    document_id UUID REFERENCES vectors(id),
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536)
+);
+
+CREATE OR REPLACE FUNCTION match_summaries(query_embedding VECTOR(1536), match_count INT, match_threshold FLOAT)
+RETURNS TABLE(
+    id BIGINT,
+    document_id UUID,
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536),
+    similarity FLOAT
+) LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        id,
+        document_id,
+        content,
+        metadata,
+        embedding,
+        1 - (summaries.embedding <=> query_embedding) AS similarity
+    FROM
+        summaries
+    WHERE 1 - (summaries.embedding <=> query_embedding) > match_threshold
+    ORDER BY
+        summaries.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;
+CREATE TABLE IF NOT EXISTS api_keys(
+    key_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users (id),
+    api_key TEXT UNIQUE,
+    creation_time TIMESTAMP DEFAULT current_timestamp,
+    deleted_time TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+CREATE TABLE  IF NOT EXISTS brains (
+  brain_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT,
+  status TEXT,
+  model TEXT,
+  max_tokens TEXT,
+  temperature FLOAT
+);
+
+CREATE TABLE IF NOT EXISTS brains_users (
+  brain_id UUID,
+  user_id UUID,
+  rights VARCHAR(255),
+  default_brain BOOLEAN DEFAULT false,
+  PRIMARY KEY (brain_id, user_id),
+  FOREIGN KEY (user_id) REFERENCES auth.users (id),
+  FOREIGN KEY (brain_id) REFERENCES brains (brain_id)
+);
+CREATE TABLE IF NOT EXISTS brains_vectors (
+  brain_id UUID,
+  vector_id UUID,
+  file_sha1 TEXT,
+  PRIMARY KEY (brain_id, vector_id),
+  FOREIGN KEY (vector_id) REFERENCES vectors (id),
+  FOREIGN KEY (brain_id) REFERENCES brains (brain_id)
+);
+CREATE TABLE IF NOT EXISTS brain_subscription_invitations (
+  brain_id UUID,
+  email VARCHAR(255),
+  rights VARCHAR(255),
+  PRIMARY KEY (brain_id, email),
+  FOREIGN KEY (brain_id) REFERENCES brains (brain_id)
+);
+
+CREATE OR REPLACE FUNCTION public.get_user_email_by_user_id(user_id uuid)
+RETURNS TABLE (email text)
+SECURITY definer
+AS $$
+BEGIN
+  RETURN QUERY SELECT au.email::text FROM auth.users au WHERE au.id = user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION public.get_user_id_by_user_email(user_email text)
+RETURNS TABLE (user_id uuid)
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY SELECT au.id::uuid FROM auth.users au WHERE au.email = user_email;
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+CREATE TABLE IF NOT EXISTS migrations (
+  name VARCHAR(255)  PRIMARY KEY,
+  executed_at TIMESTAMPTZ DEFAULT current_timestamp
+);
+
+INSERT INTO migrations (name) 
+SELECT '20230717173000_add_get_user_id_by_user_email'
+WHERE NOT EXISTS (
+    SELECT 1 FROM migrations WHERE name = '20230717173000_add_get_user_id_by_user_email'
+);```. here is the sql query for the database creation. "/Users/aswin/Documents/quivr/backend/core/repository/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/resend_invitation_email.py" ```import resend
+from logger import get_logger
+from models.brains import Brain
+from models.brains_subscription_invitations import BrainSubscription
+from models.settings import BrainSettings
+
+from repository.brain_subscription.get_brain_url import get_brain_url
+
+logger = get_logger(__name__)
+
+
+def resend_invitation_email(
+    brain_subscription: BrainSubscription,
+    inviter_email: str,
+    origin: str = "https://www.quivr.app",
+):
+    brains_settings = BrainSettings()  # pyright: ignore reportPrivateUsage=none
+    resend.api_key = brains_settings.resend_api_key
+
+    brain_url = get_brain_url(origin, brain_subscription.brain_id)
+
+    invitation_brain_client = Brain(id=brain_subscription.brain_id)
+    invitation_brain = invitation_brain_client.get_brain_details()[0]
+    brain_name = invitation_brain["name"]
+
+    html_body = f"""
+    <p>Brain {brain_name} has been shared with you by {inviter_email}.</p>
+    <p><a href='{brain_url}'>Click here</a> to access your brain.</p>
+    """
+
+    try:
+        r = resend.Emails.send(
+            {
+                "from": brains_settings.resend_email_address,
+                "to": brain_subscription.email,
+                "subject": "Quivr - Brain Shared With You",
+                "html": html_body,
+            }
+        )
+        logger.info("Resend response", r)
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        return
+
+    return r
+```
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/subscription_invitation_service.py" ```from typing import Optional
+
+from logger import get_logger
+from models.brains_subscription_invitations import BrainSubscription
+from models.settings import CommonsDep, common_dependencies
+
+logger = get_logger(__name__)
+
+
+class SubscriptionInvitationService:
+    def __init__(self, commons: Optional[CommonsDep] = None):
+        self.commons = common_dependencies()
+
+    def create_subscription_invitation(self, brain_subscription: BrainSubscription):
+        logger.info("Creating subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .insert(
+                {
+                    "brain_id": str(brain_subscription.brain_id),
+                    "email": brain_subscription.email,
+                    "rights": brain_subscription.rights,
+                }
+            )
+            .execute()
+        )
+        return response.data
+
+    def update_subscription_invitation(self, brain_subscription: BrainSubscription):
+        logger.info("Updating subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .update({"rights": brain_subscription.rights})
+            .eq("brain_id", str(brain_subscription.brain_id))
+            .eq("email", brain_subscription.email)
+            .execute()
+        )
+        return response.data
+
+    def create_or_update_subscription_invitation(
+        self, brain_subscription: BrainSubscription
+    ):
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .select("*")
+            .eq("brain_id", str(brain_subscription.brain_id))
+            .eq("email", brain_subscription.email)
+            .execute()
+        )
+
+        if response.data:
+            response = self.update_subscription_invitation(brain_subscription)
+        else:
+            response = self.create_subscription_invitation(brain_subscription)
+
+        return response
+
+    def fetch_invitation(self, subscription: BrainSubscription):
+        logger.info("Fetching subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .select("*")
+            .eq("brain_id", str(subscription.brain_id))
+            .eq("email", subscription.email)
+            .execute()
+        )
+        if response.data:
+            return response.data[0]  # return the first matching invitation
+        else:
+            return None
+
+    def remove_invitation(self, subscription: BrainSubscription):
+        logger.info(
+            f"Removing subscription invitation for email {subscription.email} and brain {subscription.brain_id}"
+        )
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .delete()
+            .eq("brain_id", str(subscription.brain_id))
+            .eq("email", subscription.email)
+            .execute()
+        )
+        logger.info(
+            f"Removed subscription invitation for email {subscription.email} and brain {subscription.brain_id}"
+        )
+        logger.info(response)
+        return response.data
+```
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/get_brain_url.py" ```import os
+from uuid import UUID
+
+
+def get_brain_url(origin: str, brain_id: UUID) -> str:
+    """Generates the brain URL based on the brain_id."""
+
+    return f"{origin}/invitation/{brain_id}"
+```. these are the repositories for interacting with the database. i would like to create 3 types of plan. modify "/subscribe/{plan_id}" as necessary and other files . give me only correct complete modified fastapi code for my project to inegrate stripe payment

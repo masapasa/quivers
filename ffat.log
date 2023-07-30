@@ -1,0 +1,328 @@
+"scripts/tables.sql" ```CREATE TABLE IF NOT EXISTS users(
+    user_id UUID REFERENCES auth.users (id),
+    email TEXT,
+    date TEXT,
+    requests_count INT,
+    PRIMARY KEY (user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS chats(
+    chat_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users (id),
+    creation_time TIMESTAMP DEFAULT current_timestamp,
+    history JSONB,
+    chat_name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    message_id UUID DEFAULT uuid_generate_v4(),
+    chat_id UUID REFERENCES chats(chat_id),
+    user_message TEXT,
+    assistant TEXT,
+    message_time TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS vectors (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536)
+);
+
+CREATE OR REPLACE FUNCTION match_vectors(query_embedding VECTOR(1536), match_count INT, p_brain_id UUID)
+RETURNS TABLE(
+    id UUID,
+    brain_id UUID,
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536),
+    similarity FLOAT
+) LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        vectors.id,
+        brains_vectors.brain_id,
+        vectors.content,
+        vectors.metadata,
+        vectors.embedding,
+        1 - (vectors.embedding <=> query_embedding) AS similarity
+    FROM
+        vectors
+    INNER JOIN
+        brains_vectors ON vectors.id = brains_vectors.vector_id
+    WHERE brains_vectors.brain_id = p_brain_id
+    ORDER BY
+        vectors.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS stats (
+    time TIMESTAMP,
+    chat BOOLEAN,
+    embedding BOOLEAN,
+    details TEXT,
+    metadata JSONB,
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    id BIGSERIAL PRIMARY KEY,
+    document_id UUID REFERENCES vectors(id),
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536)
+);
+
+CREATE OR REPLACE FUNCTION match_summaries(query_embedding VECTOR(1536), match_count INT, match_threshold FLOAT)
+RETURNS TABLE(
+    id BIGINT,
+    document_id UUID,
+    content TEXT,
+    metadata JSONB,
+    embedding VECTOR(1536),
+    similarity FLOAT
+) LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        id,
+        document_id,
+        content,
+        metadata,
+        embedding,
+        1 - (summaries.embedding <=> query_embedding) AS similarity
+    FROM
+        summaries
+    WHERE 1 - (summaries.embedding <=> query_embedding) > match_threshold
+    ORDER BY
+        summaries.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;
+CREATE TABLE IF NOT EXISTS api_keys(
+    key_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users (id),
+    api_key TEXT UNIQUE,
+    creation_time TIMESTAMP DEFAULT current_timestamp,
+    deleted_time TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+CREATE TABLE  IF NOT EXISTS brains (
+  brain_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT,
+  status TEXT,
+  model TEXT,
+  max_tokens TEXT,
+  temperature FLOAT
+);
+
+CREATE TABLE IF NOT EXISTS brains_users (
+  brain_id UUID,
+  user_id UUID,
+  rights VARCHAR(255),
+  default_brain BOOLEAN DEFAULT false,
+  PRIMARY KEY (brain_id, user_id),
+  FOREIGN KEY (user_id) REFERENCES auth.users (id),
+  FOREIGN KEY (brain_id) REFERENCES brains (brain_id)
+);
+CREATE TABLE IF NOT EXISTS brains_vectors (
+  brain_id UUID,
+  vector_id UUID,
+  file_sha1 TEXT,
+  PRIMARY KEY (brain_id, vector_id),
+  FOREIGN KEY (vector_id) REFERENCES vectors (id),
+  FOREIGN KEY (brain_id) REFERENCES brains (brain_id)
+);
+CREATE TABLE IF NOT EXISTS brain_subscription_invitations (
+  brain_id UUID,
+  email VARCHAR(255),
+  rights VARCHAR(255),
+  PRIMARY KEY (brain_id, email),
+  FOREIGN KEY (brain_id) REFERENCES brains (brain_id)
+);
+
+CREATE OR REPLACE FUNCTION public.get_user_email_by_user_id(user_id uuid)
+RETURNS TABLE (email text)
+SECURITY definer
+AS $$
+BEGIN
+  RETURN QUERY SELECT au.email::text FROM auth.users au WHERE au.id = user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION public.get_user_id_by_user_email(user_email text)
+RETURNS TABLE (user_id uuid)
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY SELECT au.id::uuid FROM auth.users au WHERE au.email = user_email;
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+CREATE TABLE IF NOT EXISTS migrations (
+  name VARCHAR(255)  PRIMARY KEY,
+  executed_at TIMESTAMPTZ DEFAULT current_timestamp
+);
+
+INSERT INTO migrations (name) 
+SELECT '20230717173000_add_get_user_id_by_user_email'
+WHERE NOT EXISTS (
+    SELECT 1 FROM migrations WHERE name = '20230717173000_add_get_user_id_by_user_email'
+);```. here is the sql query for the database creation. "/Users/aswin/Documents/quivr/backend/core/repository/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/resend_invitation_email.py" ```import resend
+from logger import get_logger
+from models.brains import Brain
+from models.brains_subscription_invitations import BrainSubscription
+from models.settings import BrainSettings
+
+from repository.brain_subscription.get_brain_url import get_brain_url
+
+logger = get_logger(__name__)
+
+
+def resend_invitation_email(
+    brain_subscription: BrainSubscription,
+    inviter_email: str,
+    origin: str = "https://www.quivr.app",
+):
+    brains_settings = BrainSettings()  # pyright: ignore reportPrivateUsage=none
+    resend.api_key = brains_settings.resend_api_key
+
+    brain_url = get_brain_url(origin, brain_subscription.brain_id)
+
+    invitation_brain_client = Brain(id=brain_subscription.brain_id)
+    invitation_brain = invitation_brain_client.get_brain_details()[0]
+    brain_name = invitation_brain["name"]
+
+    html_body = f"""
+    <p>Brain {brain_name} has been shared with you by {inviter_email}.</p>
+    <p><a href='{brain_url}'>Click here</a> to access your brain.</p>
+    """
+
+    try:
+        r = resend.Emails.send(
+            {
+                "from": brains_settings.resend_email_address,
+                "to": brain_subscription.email,
+                "subject": "Quivr - Brain Shared With You",
+                "html": html_body,
+            }
+        )
+        logger.info("Resend response", r)
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        return
+
+    return r
+```
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/subscription_invitation_service.py" ```from typing import Optional
+
+from logger import get_logger
+from models.brains_subscription_invitations import BrainSubscription
+from models.settings import CommonsDep, common_dependencies
+
+logger = get_logger(__name__)
+
+
+class SubscriptionInvitationService:
+    def __init__(self, commons: Optional[CommonsDep] = None):
+        self.commons = common_dependencies()
+
+    def create_subscription_invitation(self, brain_subscription: BrainSubscription):
+        logger.info("Creating subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .insert(
+                {
+                    "brain_id": str(brain_subscription.brain_id),
+                    "email": brain_subscription.email,
+                    "rights": brain_subscription.rights,
+                }
+            )
+            .execute()
+        )
+        return response.data
+
+    def update_subscription_invitation(self, brain_subscription: BrainSubscription):
+        logger.info("Updating subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .update({"rights": brain_subscription.rights})
+            .eq("brain_id", str(brain_subscription.brain_id))
+            .eq("email", brain_subscription.email)
+            .execute()
+        )
+        return response.data
+
+    def create_or_update_subscription_invitation(
+        self, brain_subscription: BrainSubscription
+    ):
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .select("*")
+            .eq("brain_id", str(brain_subscription.brain_id))
+            .eq("email", brain_subscription.email)
+            .execute()
+        )
+
+        if response.data:
+            response = self.update_subscription_invitation(brain_subscription)
+        else:
+            response = self.create_subscription_invitation(brain_subscription)
+
+        return response
+
+    def fetch_invitation(self, subscription: BrainSubscription):
+        logger.info("Fetching subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .select("*")
+            .eq("brain_id", str(subscription.brain_id))
+            .eq("email", subscription.email)
+            .execute()
+        )
+        if response.data:
+            return response.data[0]  # return the first matching invitation
+        else:
+            return None
+
+    def remove_invitation(self, subscription: BrainSubscription):
+        logger.info(
+            f"Removing subscription invitation for email {subscription.email} and brain {subscription.brain_id}"
+        )
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .delete()
+            .eq("brain_id", str(subscription.brain_id))
+            .eq("email", subscription.email)
+            .execute()
+        )
+        logger.info(
+            f"Removed subscription invitation for email {subscription.email} and brain {subscription.brain_id}"
+        )
+        logger.info(response)
+        return response.data
+```
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/repository/brain_subscription/get_brain_url.py" ```import os
+from uuid import UUID
+
+
+def get_brain_url(origin: str, brain_id: UUID) -> str:
+    """Generates the brain URL based on the brain_id."""
+
+    return f"{origin}/invitation/{brain_id}"
+```. these are the repositories for interacting with the database. 

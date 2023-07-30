@@ -1,0 +1,1164 @@
+"/Users/aswin/Documents/quivr/backend/core/auth/__init__.py" ```from .auth_bearer import AuthBearer, get_current_user
+
+__all__ = [
+    "AuthBearer",
+    "get_current_user",
+]
+```
+"/Users/aswin/Documents/quivr/backend/core/auth/api_key_handler.py" ```from datetime import datetime
+
+from fastapi import HTTPException
+from models.settings import common_dependencies
+from models.users import User
+from pydantic import DateError
+
+
+async def verify_api_key(
+    api_key: str,
+) -> bool:
+    try:
+        # Use UTC time to avoid timezone issues
+        current_date = datetime.utcnow().date()
+        commons = common_dependencies()
+        result = (
+            commons["supabase"]
+            .table("api_keys")
+            .select("api_key", "creation_time")
+            .filter("api_key", "eq", api_key)
+            .filter("is_active", "eq", True)
+            .execute()
+        )
+        if result.data is not None and len(result.data) > 0:
+            api_key_creation_date = datetime.strptime(
+                result.data[0]["creation_time"], "%Y-%m-%dT%H:%M:%S"
+            ).date()
+
+            # Check if the API key was created in the month of the current date
+            if (api_key_creation_date.month == current_date.month) and (
+                api_key_creation_date.year == current_date.year
+            ):
+                return True
+        return False
+    except DateError:
+        return False
+
+
+async def get_user_from_api_key(
+    api_key: str,
+) -> User:
+    commons = common_dependencies()
+
+    # Lookup the user_id from the api_keys table
+    user_id_data = (
+        commons["supabase"]
+        .table("api_keys")
+        .select("user_id")
+        .filter("api_key", "eq", api_key)
+        .execute()
+    )
+
+    if not user_id_data.data:
+        raise HTTPException(status_code=400, detail="Invalid API key.")
+
+    user_id = user_id_data.data[0]["user_id"]
+
+    # Lookup the email from the users table. Todo: remove and use user_id for credentials
+    user_email_data = (
+        commons["supabase"]
+        .table("users")
+        .select("email")
+        .filter("user_id", "eq", user_id)
+        .execute()
+    )
+
+    email = user_email_data.data[0]["email"] if user_email_data.data else None
+
+    return User(email=email, id=user_id)
+```
+"/Users/aswin/Documents/quivr/backend/core/auth/auth_bearer.py" ```import os
+from typing import Optional
+from auth.api_key_handler import get_user_from_api_key, verify_api_key
+from auth.jwt_token_handler import decode_access_token, verify_token
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from models.users import User
+
+class AuthBearer(HTTPBearer):
+    def __init__(self, auto_error: bool = True):
+        super().__init__(auto_error=auto_error)
+
+    async def __call__(
+        self,
+        request: Request,
+    ):
+        credentials: Optional[HTTPAuthorizationCredentials] = await super().__call__(
+            request
+        )
+        self.check_scheme(credentials)
+        token = credentials.credentials  # pyright: ignore reportPrivateUsage=none
+        return await self.authenticate(
+            token,
+        )
+
+    def check_scheme(self, credentials):
+        if credentials and credentials.scheme != "Bearer":
+            raise HTTPException(status_code=401, detail="Token must be Bearer")
+        elif not credentials:
+            raise HTTPException(
+                status_code=403, detail="Authentication credentials missing"
+            )
+
+    async def authenticate(
+        self,
+        token: str,
+    ) -> User:
+        if os.environ.get("AUTHENTICATE") == "false":
+            return self.get_test_user()
+        elif verify_token(token):
+            return decode_access_token(token)
+        elif await verify_api_key(
+            token,
+        ):
+            return await get_user_from_api_key(
+                token,
+            )
+        else:
+            raise HTTPException(status_code=401, detail="Invalid token or api key.")
+
+    def get_test_user(self) -> User:
+        return User(
+            email="test@example.com", id="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"  # type: ignore
+        )  # replace with test user information
+
+
+def get_current_user(user: User = Depends(AuthBearer())) -> User:
+    return user
+```
+"/Users/aswin/Documents/quivr/backend/core/auth/jwt_token_handler.py" ```import os
+from datetime import datetime, timedelta
+from typing import Optional
+import dotenv
+from jose import jwt
+from jose.exceptions import JWTError
+dotenv.load_dotenv(verbose=True)
+from models.users import User
+dotenv.load_dotenv(verbose=True)
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+ALGORITHM = "HS256"
+
+if not SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY environment variable not set")
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def decode_access_token(token: str) -> User:
+    try:
+        payload = jwt.decode(
+            token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_aud": False}
+        )
+    except JWTError:
+        return None  # pyright: ignore reportPrivateUsage=none
+
+    return User(
+        email=payload.get("email"),
+        id=payload.get("sub"),  # pyright: ignore reportPrivateUsage=none
+    )
+
+
+def verify_token(token: str):
+    payload = decode_access_token(token)
+    return payload is not None
+```. this is fastapi pythoc codes for authorization. "/Users/aswin/Documents/quivr/backend/core/models/brains.py" ```from typing import Any, List, Optional
+from uuid import UUID
+
+from logger import get_logger
+from pydantic import BaseModel
+from utils.vectors import get_unique_files_from_vector_ids
+
+from models.settings import BrainRateLimiting, CommonsDep, common_dependencies
+from models.users import User
+
+logger = get_logger(__name__)
+
+
+class Brain(BaseModel):
+    id: Optional[UUID] = None
+    name: Optional[str] = "Default brain"
+    status: Optional[str] = "public"
+    model: Optional[str] = "gpt-3.5-turbo-16k"
+    temperature: Optional[float] = 0.0
+    max_tokens: Optional[int] = 256
+    files: List[Any] = []
+    max_brain_size = BrainRateLimiting().max_brain_size
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    @property
+    def commons(self) -> CommonsDep:
+        return common_dependencies()
+
+    @property
+    def brain_size(self):
+        self.get_unique_brain_files()
+        current_brain_size = sum(float(doc["size"]) for doc in self.files)
+
+        return current_brain_size
+
+    @property
+    def remaining_brain_size(self):
+        return (
+            float(self.max_brain_size)  # pyright: ignore reportPrivateUsage=none
+            - self.brain_size  # pyright: ignore reportPrivateUsage=none
+        )
+
+    @classmethod
+    def create(cls, *args, **kwargs):
+        commons = common_dependencies()
+        return cls(
+            commons=commons, *args, **kwargs  # pyright: ignore reportPrivateUsage=none
+        )  # pyright: ignore reportPrivateUsage=none
+
+    # TODO: move this to a brand new BrainService
+    def get_brain_users(self):
+        response = (
+            self.commons["supabase"]
+            .table("brains_users")
+            .select("id:brain_id, *")
+            .filter("brain_id", "eq", self.id)
+            .execute()
+        )
+        return response.data
+
+    # TODO: move this to a brand new BrainService
+    def delete_user_from_brain(self, user_id):
+        results = (
+            self.commons["supabase"]
+            .table("brains_users")
+            .select("*")
+            .match({"brain_id": self.id, "user_id": user_id})
+            .execute()
+        )
+
+        if len(results.data) != 0:
+            self.commons["supabase"].table("brains_users").delete().match(
+                {"brain_id": self.id, "user_id": user_id}
+            ).execute()
+
+    def get_user_brains(self, user_id):
+        response = (
+            self.commons["supabase"]
+            .from_("brains_users")
+            .select("id:brain_id, rights, brains (id: brain_id, name)")
+            .filter("user_id", "eq", user_id)
+            .execute()
+        )
+        user_brains = []
+        for item in response.data:
+            user_brains.append(item["brains"])
+            user_brains[-1]["rights"] = item["rights"]
+        return user_brains
+
+    def get_brain_for_user(self, user_id):
+        response = (
+            self.commons["supabase"]
+            .from_("brains_users")
+            .select("id:brain_id, rights, brains (id: brain_id, name)")
+            .filter("user_id", "eq", user_id)
+            .filter("brain_id", "eq", self.id)
+            .execute()
+        )
+        if len(response.data) == 0:
+            return None
+        return response.data[0]
+
+    def get_brain_details(self):
+        response = (
+            self.commons["supabase"]
+            .from_("brains")
+            .select("id:brain_id, name, *")
+            .filter("brain_id", "eq", self.id)
+            .execute()
+        )
+        return response.data
+
+    def delete_brain(self, user_id):
+        results = (
+            self.commons["supabase"]
+            .table("brains_users")
+            .select("*")
+            .match({"brain_id": self.id, "user_id": user_id, "rights": "Owner"})
+            .execute()
+        )
+        if len(results.data) == 0:
+            return {"message": "You are not the owner of this brain."}
+        else:
+            results = (
+                self.commons["supabase"]
+                .table("brains_vectors")
+                .delete()
+                .match({"brain_id": self.id})
+                .execute()
+            )
+
+            results = (
+                self.commons["supabase"]
+                .table("brains_users")
+                .delete()
+                .match({"brain_id": self.id})
+                .execute()
+            )
+
+            results = (
+                self.commons["supabase"]
+                .table("brains")
+                .delete()
+                .match({"brain_id": self.id})
+                .execute()
+            )
+
+    def create_brain(self):
+        commons = common_dependencies()
+        response = (
+            commons["supabase"].table("brains").insert({"name": self.name}).execute()
+        )
+
+        self.id = response.data[0]["brain_id"]
+        return response.data
+
+    def create_brain_user(self, user_id: UUID, rights, default_brain: bool):
+        commons = common_dependencies()
+        response = (
+            commons["supabase"]
+            .table("brains_users")
+            .insert(
+                {
+                    "brain_id": str(self.id),
+                    "user_id": str(user_id),
+                    "rights": rights,
+                    "default_brain": default_brain,
+                }
+            )
+            .execute()
+        )
+
+        return response.data
+
+    def create_brain_vector(self, vector_id, file_sha1):
+        response = (
+            self.commons["supabase"]
+            .table("brains_vectors")
+            .insert(
+                {
+                    "brain_id": str(self.id),
+                    "vector_id": str(vector_id),
+                    "file_sha1": file_sha1,
+                }
+            )
+            .execute()
+        )
+        return response.data
+
+    def get_vector_ids_from_file_sha1(self, file_sha1: str):
+        # move to vectors class
+        vectorsResponse = (
+            self.commons["supabase"]
+            .table("vectors")
+            .select("id")
+            .filter("metadata->>file_sha1", "eq", file_sha1)
+            .execute()
+        )
+        return vectorsResponse.data
+
+    def update_brain_fields(self):
+        self.commons["supabase"].table("brains").update({"name": self.name}).match(
+            {"brain_id": self.id}
+        ).execute()
+
+    def update_brain_with_file(self, file_sha1: str):
+        # not  used
+        vector_ids = self.get_vector_ids_from_file_sha1(file_sha1)
+        for vector_id in vector_ids:
+            self.create_brain_vector(vector_id, file_sha1)
+
+    def get_unique_brain_files(self):
+        """
+        Retrieve unique brain data (i.e. uploaded files and crawled websites).
+        """
+
+        response = (
+            self.commons["supabase"]
+            .from_("brains_vectors")
+            .select("vector_id")
+            .filter("brain_id", "eq", self.id)
+            .execute()
+        )
+
+        vector_ids = [item["vector_id"] for item in response.data]
+
+        if len(vector_ids) == 0:
+            return []
+
+        self.files = get_unique_files_from_vector_ids(vector_ids)
+
+        return self.files
+
+    def delete_file_from_brain(self, file_name: str):
+        # First, get the vector_ids associated with the file_name
+        vector_response = (
+            self.commons["supabase"]
+            .table("vectors")
+            .select("id")
+            .filter("metadata->>file_name", "eq", file_name)
+            .execute()
+        )
+        vector_ids = [item["id"] for item in vector_response.data]
+
+        # For each vector_id, delete the corresponding entry from the 'brains_vectors' table
+        for vector_id in vector_ids:
+            self.commons["supabase"].table("brains_vectors").delete().filter(
+                "vector_id", "eq", vector_id
+            ).filter("brain_id", "eq", self.id).execute()
+
+            # Check if the vector is still associated with any other brains
+            associated_brains_response = (
+                self.commons["supabase"]
+                .table("brains_vectors")
+                .select("brain_id")
+                .filter("vector_id", "eq", vector_id)
+                .execute()
+            )
+            associated_brains = [
+                item["brain_id"] for item in associated_brains_response.data
+            ]
+
+            # If the vector is not associated with any other brains, delete it from 'vectors' table
+            if not associated_brains:
+                self.commons["supabase"].table("vectors").delete().filter(
+                    "id", "eq", vector_id
+                ).execute()
+
+        return {"message": f"File {file_name} in brain {self.id} has been deleted."}
+
+
+def get_default_user_brain(user: User):
+    commons = common_dependencies()
+    response = (
+        commons["supabase"]
+        .from_("brains_users")
+        .select("brain_id")
+        .filter("user_id", "eq", user.id)
+        .filter("default_brain", "eq", True)
+        .execute()
+    )
+
+    default_brain_id = response.data[0]["brain_id"] if response.data else None
+
+    logger.info(f"Default brain id: {default_brain_id}")
+
+    if default_brain_id:
+        brain_response = (
+            commons["supabase"]
+            .from_("brains")
+            .select("id:brain_id, name, *")
+            .filter("brain_id", "eq", default_brain_id)
+            .execute()
+        )
+
+        return brain_response.data[0] if brain_response.data else None
+
+
+def get_default_user_brain_or_create_new(user: User) -> Brain:
+    default_brain = get_default_user_brain(user)
+
+    if default_brain:
+        return Brain.create(**default_brain)
+    else:
+        brain = Brain.create()
+        brain.create_brain()
+        brain.create_brain_user(user.id, "Owner", True)
+        return brain
+```
+"/Users/aswin/Documents/quivr/backend/core/models/files.py" ```import os
+import tempfile
+from typing import Any, Optional
+from uuid import UUID
+
+from fastapi import UploadFile
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from logger import get_logger
+from models.brains import Brain
+from models.settings import CommonsDep, common_dependencies
+from pydantic import BaseModel
+from utils.file import compute_sha1_from_file
+
+logger = get_logger(__name__)
+
+
+class File(BaseModel):
+    id: Optional[UUID] = None
+    file: Optional[UploadFile]
+    file_name: Optional[str] = ""
+    file_size: Optional[int] = None
+    file_sha1: Optional[str] = ""
+    vectors_ids: Optional[list] = []
+    file_extension: Optional[str] = ""
+    content: Optional[Any] = None
+    chunk_size: int = 500
+    chunk_overlap: int = 0
+    documents: Optional[Any] = None
+    _commons: Optional[CommonsDep] = None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        if self.file:
+            self.file_name = self.file.filename
+            self.file_size = (
+                self.file.file._file.tell()  # pyright: ignore reportPrivateUsage=none
+            )
+            self.file_extension = os.path.splitext(
+                self.file.filename  # pyright: ignore reportPrivateUsage=none
+            )[-1].lower()
+
+    async def compute_file_sha1(self):
+        """
+        Compute the sha1 of the file using a temporary file
+        """
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=self.file.filename,  # pyright: ignore reportPrivateUsage=none
+        ) as tmp_file:
+            await self.file.seek(0)  # pyright: ignore reportPrivateUsage=none
+            self.content = (
+                await self.file.read()  # pyright: ignore reportPrivateUsage=none
+            )
+            tmp_file.write(self.content)
+            tmp_file.flush()
+            self.file_sha1 = compute_sha1_from_file(tmp_file.name)
+
+        os.remove(tmp_file.name)
+
+    def compute_documents(self, loader_class):
+        """
+        Compute the documents from the file
+
+        Args:
+            loader_class (class): The class of the loader to use to load the file
+        """
+        logger.info(f"Computing documents from file {self.file_name}")
+
+        documents = []
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=self.file.filename,  # pyright: ignore reportPrivateUsage=none
+        ) as tmp_file:
+            tmp_file.write(self.content)  # pyright: ignore reportPrivateUsage=none
+            tmp_file.flush()
+            loader = loader_class(tmp_file.name)
+            documents = loader.load()
+
+            print("documents", documents)
+
+        os.remove(tmp_file.name)
+
+        text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+            chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap
+        )
+
+        self.documents = text_splitter.split_documents(documents)
+
+        print(self.documents)
+
+    def set_file_vectors_ids(self):
+        """
+        Set the vectors_ids property with the ids of the vectors
+        that are associated with the file in the vectors table
+        """
+
+        commons = common_dependencies()
+        response = (
+            commons["supabase"]
+            .table("vectors")
+            .select("id")
+            .filter("metadata->>file_sha1", "eq", self.file_sha1)
+            .execute()
+        )
+        self.vectors_ids = response.data
+        return
+
+    def file_already_exists(self):
+        """
+        Check if file already exists in vectors table
+        """
+        self.set_file_vectors_ids()
+
+        print("file_sha1", self.file_sha1)
+        print("vectors_ids", self.vectors_ids)
+        print(
+            "len(vectors_ids)",
+            len(self.vectors_ids),  # pyright: ignore reportPrivateUsage=none
+        )
+
+        # if the file does not exist in vectors then no need to go check in brains_vectors
+        if len(self.vectors_ids) == 0:  # pyright: ignore reportPrivateUsage=none
+            return False
+
+        return True
+
+    def file_already_exists_in_brain(self, brain_id):
+        """
+        Check if file already exists in a brain
+
+        Args:
+            brain_id (str): Brain id
+        """
+        commons = common_dependencies()
+        self.set_file_vectors_ids()
+        # Check if file exists in that brain
+        response = (
+            commons["supabase"]
+            .table("brains_vectors")
+            .select("brain_id, vector_id")
+            .filter("brain_id", "eq", brain_id)
+            .filter("file_sha1", "eq", self.file_sha1)
+            .execute()
+        )
+        print("response.data", response.data)
+        if len(response.data) == 0:
+            return False
+
+        return True
+
+    def file_is_empty(self):
+        """
+        Check if file is empty by checking if the file pointer is at the beginning of the file
+        """
+        return (
+            self.file.file._file.tell() < 1  # pyright: ignore reportPrivateUsage=none
+        )
+
+    def link_file_to_brain(self, brain: Brain):
+        self.set_file_vectors_ids()
+
+        if self.vectors_ids is None:
+            return
+
+        for vector_id in self.vectors_ids:  # pyright: ignore reportPrivateUsage=none
+            brain.create_brain_vector(vector_id["id"], self.file_sha1)
+        print(f"Successfully linked file {self.file_sha1} to brain {brain.id}")
+```
+"/Users/aswin/Documents/quivr/backend/core/models/brains_subscription_invitations.py" ```from uuid import UUID
+
+from logger import get_logger
+from pydantic import BaseModel
+
+from models.settings import CommonsDep, common_dependencies
+
+logger = get_logger(__name__)
+
+
+class BrainSubscription(BaseModel):
+    brain_id: UUID
+    email: str
+    rights: str = "Viewer"
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    @property
+    def commons(self) -> CommonsDep:
+        return common_dependencies()
+
+    def create_subscription_invitation(self):
+        logger.info("Creating subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .insert(
+                {
+                    "brain_id": str(self.brain_id),
+                    "email": self.email,
+                    "rights": self.rights,
+                }
+            )
+            .execute()
+        )
+        return response.data
+
+    def update_subscription_invitation(self):
+        logger.info("Updating subscription invitation")
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .update({"rights": self.rights})
+            .eq("brain_id", str(self.brain_id))
+            .eq("email", self.email)
+            .execute()
+        )
+        return response.data
+
+    def create_or_update_subscription_invitation(self):
+        response = (
+            self.commons["supabase"]
+            .table("brain_subscription_invitations")
+            .select("*")
+            .eq("brain_id", str(self.brain_id))
+            .eq("email", self.email)
+            .execute()
+        )
+
+        if response.data:
+            response = self.update_subscription_invitation()
+        else:
+            response = self.create_subscription_invitation()
+
+        return response
+```
+"/Users/aswin/Documents/quivr/backend/core/models/users.py" ```from typing import Optional
+from uuid import UUID
+
+from logger import get_logger
+from models.settings import common_dependencies
+from pydantic import BaseModel
+
+logger = get_logger(__name__)
+
+
+class User(BaseModel):
+    id: UUID
+    email: Optional[str]
+    user_openai_api_key: Optional[str] = None
+    requests_count: int = 0
+    def create_user(self, date):
+        commons = common_dependencies()
+        logger.info(f"New user entry in db document for user {self.email}")
+
+        return (
+            commons["supabase"]
+            .table("users")
+            .insert(
+                {
+                    "user_id": self.id,
+                    "email": self.email,
+                    "date": date,
+                    "requests_count": 1,
+                }
+            )
+            .execute()
+        )
+
+
+        commons = common_dependencies()
+        requests_stats = (
+            commons["supabase"]
+            .from_("users")
+            .select("*")
+            .filter("user_id", "eq", self.id)
+            .execute()
+        )
+        return requests_stats.data
+
+    def fetch_user_requests_count(self, date):
+        commons = common_dependencies()
+        response = (
+            commons["supabase"]
+            .from_("users")
+            .select("*")
+            .filter("user_id", "eq", self.id)
+            .filter("date", "eq", date)
+            .execute()
+        )
+        userItem = next(iter(response.data or []), {"requests_count": 0})
+
+        return userItem["requests_count"]
+
+    def increment_user_request_count(self, date):
+        commons = common_dependencies()
+        requests_count = self.fetch_user_requests_count(date) + 1
+        logger.info(f"User {self.email} request count updated to {requests_count}")
+        commons["supabase"].table("users").update(
+            {"requests_count": requests_count}
+        ).match({"user_id": self.id, "date": date}).execute()
+        self.requests_count = requests_count```
+"/Users/aswin/Documents/quivr/backend/core/models/__init__.py" ``````
+"/Users/aswin/Documents/quivr/backend/core/models/chat.py" ```from dataclasses import asdict, dataclass
+
+
+@dataclass
+class Chat:
+    chat_id: str
+    user_id: str
+    creation_time: str
+    chat_name: str
+
+    def __init__(self, chat_dict: dict):
+        self.chat_id = chat_dict.get(
+            "chat_id"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.user_id = chat_dict.get(
+            "user_id"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.creation_time = chat_dict.get(
+            "creation_time"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.chat_name = chat_dict.get(
+            "chat_name"
+        )  # pyright: ignore reportPrivateUsage=none
+
+
+@dataclass
+class ChatHistory:
+    chat_id: str
+    message_id: str
+    user_message: str
+    assistant: str
+    message_time: str
+
+    def __init__(self, chat_dict: dict):
+        self.chat_id = chat_dict.get(
+            "chat_id"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.message_id = chat_dict.get(
+            "message_id"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.user_message = chat_dict.get(
+            "user_message"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.assistant = chat_dict.get(
+            "assistant"
+        )  # pyright: ignore reportPrivateUsage=none
+        self.message_time = chat_dict.get(
+            "message_time"
+        )  # pyright: ignore reportPrivateUsage=none
+
+    def to_dict(self):
+        return asdict(self)
+```
+"/Users/aswin/Documents/quivr/backend/core/models/settings.py" ```from typing import Annotated
+
+from fastapi import Depends
+from langchain.embeddings.openai import OpenAIEmbeddings
+from pydantic import BaseSettings
+from supabase.client import Client, create_client
+from vectorstore.supabase import SupabaseVectorStore
+
+
+class BrainRateLimiting(BaseSettings):
+    max_brain_size: int = 52428800
+    # max_brain_per_user depends on the subscription type free/premium/gold free:11, premium:55, gold:inf. what is the best way to represent this?
+    max_brain_per_user: int = 5
+
+
+
+
+class BrainSettings(BaseSettings):
+    openai_api_key: str
+    anthropic_api_key: str
+    supabase_url: str
+    supabase_service_key: str
+    resend_api_key: str = "null"
+    resend_email_address: str = "info@nubri.co"
+
+
+class LLMSettings(BaseSettings):
+    private: bool = False
+    model_path: str = "./local_models/ggml-gpt4all-j-v1.3-groovy.bin"
+
+
+def common_dependencies() -> dict:
+    settings = BrainSettings()
+    embeddings = OpenAIEmbeddings(
+        openai_api_key=settings.openai_api_key
+    )
+    supabase_client: Client = create_client(
+        settings.supabase_url, settings.supabase_service_key
+    )
+    documents_vector_store = SupabaseVectorStore(
+        supabase_client, embeddings, table_name="vectors"
+    )
+    summaries_vector_store = SupabaseVectorStore(
+        supabase_client, embeddings, table_name="summaries"
+    )
+
+    return {
+        "supabase": supabase_client,
+        "embeddings": embeddings,
+        "documents_vector_store": documents_vector_store,
+        "summaries_vector_store": summaries_vector_store,
+    }
+
+
+CommonsDep = Annotated[dict, Depends(common_dependencies)]
+```
+"/Users/aswin/Documents/quivr/backend/core/models/chats.py" ```from typing import List, Optional, Tuple
+from uuid import UUID
+from pydantic import BaseModel
+class ChatMessage(BaseModel):
+    model: str = "gpt-3.5-turbo-16k"
+    question: str
+    history: List[Tuple[str, str]]
+    temperature: float = 0.0
+    max_tokens: int = 256
+    use_summarization: bool = False
+    chat_id: Optional[UUID] = None
+    chat_name: Optional[str] = None
+
+
+class ChatQuestion(BaseModel):
+    model: str = "gpt-3.5-turbo-16k"
+    question: str
+    temperature: float = 0.0
+    max_tokens: int = 256
+```. this is the fastapi python code for models. "backend/core/routes/payment_routes.py" ```import os
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+from typing import Optional
+from stripe import checkout
+import stripe
+from typing import List
+from routes import payment_routers
+import dotenv
+from auth import AuthBearer, get_current_user
+dotenv.load_dotenv(verbose=True)
+stripe_keys = {
+    "secret_key"     : os.environ.get("stripe_secret_key"),
+    "publishable_key": os.environ.get("stripe_publishable_key"),
+    "endpoint_secret": os.environ.get("stripe_secret_key")
+}
+PAYMENT_METHOD_TYPES: List[str] = ["sepa_debit", "card"]
+stripe.api_key = stripe_keys["secret_key"] 
+payment_router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+class Plan(BaseModel):
+    id: str
+    name: str
+    price: int
+
+plans = [
+    Plan(id="basic", name="Basic Plan", price=1000),
+    Plan(id="premium", name="Premium Plan", price=2000),
+    Plan(id="ultimate", name="Ultimate Plan", price=3000)
+]
+def session_url(customer_id: str, request: dict) -> str:
+    success_url = f"{request['url']['scheme']}://{request['url']['netloc']}/success"
+    cancel_url = f"{request['url']['scheme']}://{request['url']['netloc']}/cancel"
+
+    checkout_session = checkout.Session.create(
+        payment_method_types=PAYMENT_METHOD_TYPES,
+        mode="setup",
+        customer=customer_id,
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+    return checkout_session.id
+
+class CreateCustomerAndSubscriptionRequest(BaseModel):
+    email: str
+    subscriptionType: str
+
+@payment_router.post("/create", dependencies=[Depends(AuthBearer())])
+async def create_customer_and_subscription(
+    request_data: CreateCustomerAndSubscriptionRequest,
+):
+    try:
+        customer = stripe.Customer.create(
+            email=request_data.email
+        )
+        price_id = "price_1Ji8vzFm7oLwLo8u" if request_data.subscriptionType == "premium" else "price_1Ji8wGFm7oLwLo8u"
+        subscription = stripe.Subscription.create(
+            customer=customer.id,
+            items=[
+                {"price": price_id},
+            ],
+            expand=["latest_invoice.payment_intent"],
+        )
+
+        return {"customerId": customer.id, "subscriptionId": subscription.id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+@payment_router.get("/email/{email}", summary="Setup a new payment method by email")
+def setup_new_method_by_email(email: EmailStr, request: Request):
+    customer = Customer.list(email=email)
+
+    if not customer:
+        raise HTTPException(
+            status_code=404, detail=f"No customer with this email: {email}"
+        )
+
+    if len(customer.data) > 1:
+        raise HTTPException(
+            status_code=404,
+            detail="More than one customer with this email, use the id instead",
+        )
+
+    return RedirectResponse(session_url(customer.data[0].id, request), status_code=303)
+
+
+# TODO: Bypassing Ruff for now
+customer = constr(regex=r"cus_.*")
+
+
+@payment_router.get("/id/{customer_id}", summary="Setup a new payment method by user id")
+def setup_new_method_by_id(customer_id: customer, request: Request):
+    try:
+        customer = Customer.retrieve(customer_id)
+    except error.InvalidRequestError as exc:
+        raise HTTPException(status_code=404, detail=exc.error.message) from exc
+
+    return RedirectResponse(session_url(customer.id, request), status_code=303)
+@router.post("/subscribe/{plan_id}")
+async def get_user_from_token(token: str):
+    pass
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+
+router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+class Plan(BaseModel):
+    id: str
+    name: str
+    price: int
+
+plans = [
+    Plan(id="basic", name="Basic Plan", price=1000),
+    Plan(id="premium", name="Premium Plan", price=2000),
+    Plan(id="ultimate", name="Ultimate Plan", price=3000)
+]
+
+class Subscription:
+    def __init__(self, user, plan):
+        self.user = user
+        self.plan = plan
+
+async def get_user_from_token(token: str):
+    pass
+
+async def create_subscription(user, plan):
+    subscription = Subscription(user=user, plan=plan)
+    pass
+
+@payment_router.post("/subscribe/{plan_id}")
+async def subscribe(plan_id: str, token: str = Depends(oauth2_scheme)):
+    user = await get_user_from_token(token)
+    plan = next((plan for plan in plans if plan.id == plan_id), None)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    await create_subscription(user, plan)
+
+    return {"message": f"Subscribed to {plan.name}"}```. this is the payment_routes. however endpoint for creating checkout session, getting current user and getting the customers has not been implemented correctly. go through the fastapi python code architecture extensively, identify the error and give me only complete correct modified fastapi python code
+
+    import stripe
+from fastapi import HTTPException
+from starlette.responses import RedirectResponse
+
+# Set your secret key. Remember to switch to your live secret key in production!
+# See your keys here: https://dashboard.stripe.com/apikeys
+stripe.api_key = "sk_test_4eC39HqLyjWDarjtT1zdp7dc"
+
+@upload_router.post("/create-checkout-session", dependencies=[Depends(AuthBearer())], tags=["Upload"])
+async def create_checkout_session(
+    request: Request,
+    brain_id: UUID = Query(..., description="The ID of the brain"),
+    current_user: User = Depends(get_current_user),
+):
+    validate_brain_authorization(
+        brain_id, current_user.id, [RoleEnum.Editor, RoleEnum.Owner]
+    )
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": "Brain upload",
+                        },
+                        "unit_amount": 2000,
+                    },
+                    "quantity": 1,
+                },
+            ],
+            mode="payment",
+        )
+        return RedirectResponse(url=checkout_session.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+customer = constr(regex=r"cus_.*")
+
+
+@payment_router.get("/id/{customer_id}", summary="Setup a new payment method by user id")
+def setup_new_method_by_id(customer_id: customer, request: Request):
+    try:
+        customer = Customer.retrieve(customer_id)
+    except error.InvalidRequestError as exc:
+        raise HTTPException(status_code=404, detail=exc.error.message) from exc
+
+    return RedirectResponse(session_url(customer.id, request), status_code=303)
+@router.post("/subscribe/{plan_id}")
+async def get_user_from_token(token: str):
+    pass
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+
+router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+class Plan(BaseModel):
+    id: str
+    name: str
+    price: int
+
+plans = [
+    Plan(id="basic", name="Basic Plan", price=1000),
+    Plan(id="premium", name="Premium Plan", price=2000),
+    Plan(id="ultimate", name="Ultimate Plan", price=3000)
+]
+
+class Subscription:
+    def __init__(self, user, plan):
+        self.user = user
+        self.plan = plan
+
+async def get_user_from_token(token: str):
+    pass
+
+async def create_subscription(user, plan):
+    subscription = Subscription(user=user, plan=plan)
+    pass
+
+@payment_router.post("/subscribe/{plan_id}")
+async def subscribe(plan_id: str, token: str = Depends(oauth2_scheme)):
+    user = await get_user_from_token(token)
+    plan = next((plan for plan in plans if plan.id == plan_id), None)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    await create_subscription(user, plan)
+
+    return {"message": f"Subscribed to {plan.name}"}

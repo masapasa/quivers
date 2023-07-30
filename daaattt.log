@@ -1,0 +1,293 @@
+"Run # Build a docker container and
+Sending build context to Docker daemon  61.44kB
+
+Step 1/7 : FROM python:3.11-buster
+3.11-buster: Pulling from library/python
+c722db24a050: Pulling fs layer
+96cc03944f03: Waiting
+a3f8e4a0ed53: Verifying Checksum
+c722db24a050: Pull complete
+Digest: sha256:15f1f5aa70d4a0f28013d68f3f99cd786d3ae179d64e93d8fcc5fbcfe70661b8
+Status: Downloaded newer image for python:3.11-buster
+ ---> bd60c4290dd5
+Step 2/7 : RUN apt-get update && apt-get install -y libgeos-dev
+ ---> Running in cc3d75bf417b
+Get:1 http://deb.debian.org/debian buster InRelease [122 kB]
+Get:2 http://deb.debian.org/debian-security buster/updates InRelease [34.8 kB]
+Get:3 http://deb.debian.org/debian buster-updates InRelease [56.6 kB]
+Get:4 http://deb.debian.org/debian buster/main amd64 Packages [7909 kB]
+Get:5 http://deb.debian.org/debian-security buster/updates/main amd64 Packages [509 kB]
+Get:6 http://deb.debian.org/debian buster-updates/main amd64 Packages [8788 B]
+Fetched 8640 kB in 1s (5906 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libgeos-3.7.1 libgeos-c1v5
+Suggested packages:
+  libgdal-doc
+The following NEW packages will be installed:
+  libgeos-3.7.1 libgeos-c1v5 libgeos-dev
+0 upgraded, 3 newly installed, 0 to remove and 15 not upgraded.
+Need to get 1354 kB of archives.
+After this operation, 3705 kB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian buster/main amd64 libgeos-3.7.1 amd64 3.7.1-1 [735 kB]
+Get:2 http://deb.debian.org/debian buster/main amd64 libgeos-c1v5 amd64 3.7.1-1 [299 kB]
+Get:3 http://deb.debian.org/debian buster/main amd64 libgeos-dev amd64 3.7.1-1 [320 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 1354 kB in 0s (47.9 MB/s)
+Selecting previously unselected package libgeos-3.7.1:amd64.
+(Reading database ... 100%
+(Reading database ... 24615 files and directories currently installed.)
+Preparing to unpack .../libgeos-3.7.1_3.7.1-1_amd64.deb ...
+Unpacking libgeos-3.7.1:amd64 (3.7.1-1) ...
+Selecting previously unselected package libgeos-c1v5:amd64.
+Preparing to unpack .../libgeos-c1v5_3.7.1-1_amd64.deb ...
+Unpacking libgeos-c1v5:amd64 (3.7.1-1) ...
+Selecting previously unselected package libgeos-dev.
+Preparing to unpack .../libgeos-dev_3.7.1-1_amd64.deb ...
+Unpacking libgeos-dev (3.7.1-1) ...
+Setting up libgeos-3.7.1:amd64 (3.7.1-1) ...
+Setting up libgeos-c1v5:amd64 (3.7.1-1) ...
+Setting up libgeos-dev (3.7.1-1) ...
+Processing triggers for libc-bin (2.28-10+deb10u2) ...
+Removing intermediate container cc3d75bf417b
+ ---> 75cea27455d3
+Step 3/7 : WORKDIR /code
+ ---> Running in 5baaa98e4629
+Removing intermediate container 5baaa98e4629
+ ---> db906b17901e
+Step 4/7 : COPY ./requirements.txt /code/requirements.txt
+ ---> 54366a847573
+Step 5/7 : RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt --timeout 100
+ ---> Running in c13cf2d11838
+Collecting langchain==0.0.187 (from -r /code/requirements.txt (line 1))
+  Downloading langchain-0.0.187-py3-none-any.whl (960 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 960.7/960.7 kB 67.0 MB/s eta 0:00:00
+
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 143.1/143.1 kB 242.0 MB/s eta 0:00:00
+Collecting google-crc32c<2.0dev,>=1.0 (from google-resumable-media<3.0dev,>=0.6.0->google-cloud-bigquery<4.0.0dev,>=1.15.0->google_cloud_aiplatform==1.25.0->-r /code/requirements.txt (line 19))
+  Downloading google_crc32c-1.5.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (32 kB)
+INFO: pip is looking at multiple versions of grpcio-status to determine which version is compatible with other requirements. This could take a while.
+Collecting grpcio-status<2.0dev,>=1.33.2 (from google-api-core[grpc]!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,!=2.5.*,!=2.6.*,!=2.7.*,<3.0.0dev,>=1.32.0->google_cloud_aiplatform==1.25.0->-r /code/requirements.txt (line 19))
+  Downloading grpcio_status-1.49.1-py3-none-any.whl (14 kB)
+INFO: pip is looking at multiple versions of grpcio-status to determine which version is compatible with other requirements. This could take a while.
+Collecting grpc-google-iam-v1<1.0.0dev,>=0.12.4 (from google-cloud-resource-manager<3.0.0dev,>=1.3.3->google_cloud_aiplatform==1.25.0->-r /code/requirements.txt (line 19))
+  Downloading grpc_google_iam_v1-0.12.4-py2.py3-none-any.whl (26 kB)
+INFO: This is taking longer than usual. You might need to provide the dependency resolver with stricter constraints to reduce runtime. See https://pip.pypa.io/warnings/backtracking for guidance. If you want to abort this run, press Ctrl + C.
+Collecting googleapis-common-protos<2.0dev,>=1.56.2 (from google-api-core[grpc]!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,!=2.5.*,!=2.6.*,!=2.7.*,<3.0.0dev,>=1.32.0->google_cloud_aiplatform==1.25.0->-r /code/requirements.txt (line 19))
+Collecting google-cloud-core<3.0.0dev,>=1.6.0 (from google-cloud-bigquery<4.0.0dev,>=1.15.0->google_cloud_aiplatform==1.25.0->-r /code/requirements.txt (line 19))
+  Downloading google_cloud_core-2.3.1-py2.py3-none-any.whl (29 kB)
+Collecting google-cloud-storage<3.0.0dev,>=1.32.0 (from google_cloud_aiplatform==1.25.0->-r /code/requirements.txt (line 19))
+  Downloading google_cloud_resource_manager-1.7.0-py2.py3-none-any.whl (235 kB)
+Collecting mdurl~=0.1 (from markdown-it-py<3.0.0,>=2.2.0->rich>=10.11.0->streamlit==1.22.0->-r /code/requirements.txt (line 6))
+  Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Building wheels for collected packages: docx2txt, validators, python-docx, python-pptx, olefile, wrapt
+  Building wheel for docx2txt (setup.py): started
+  Building wheel for docx2txt (setup.py): finished with status 'done'
+  Created wheel for docx2txt: filename=docx2txt-0.8-py3-none-any.whl size=3957 sha256=cbca86b1a7c3a3486c08b97dbfb662519637f3e5866b630893b3053df0af4fd0
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k_6qbouh/wheels/0f/0e/7a/3094a4ceefe657bff7e12dd9592a9d5b6487ef4338ace0afa6
+  Building wheel for validators (setup.py): started
+  Building wheel for validators (setup.py): finished with status 'done'
+  Created wheel for validators: filename=validators-0.20.0-py3-none-any.whl size=19579 sha256=9f35b6623b76b3ff8dbcf37da6e2cb18cf53e4a79914967eefbc055dd1f9b640
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k_6qbouh/wheels/82/35/dc/f88ec71edf2a5596bd72a8fa1b697277e0fcd3cde83048b8bf
+  Building wheel for python-docx (setup.py): started
+  Building wheel for python-docx (setup.py): finished with status 'done'
+  Created wheel for python-docx: filename=python_docx-0.8.11-py3-none-any.whl size=184491 sha256=ea04b542b423851a519263ed798860d55429258cbe69a8c4c0ebec8c605fe672
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k_6qbouh/wheels/b2/11/b8/209e41af524253c9ba6c2a8b8ecec0f98ecbc28c732512803c
+  Building wheel for python-pptx (setup.py): started
+  Building wheel for python-pptx (setup.py): finished with status 'done'
+  Created wheel for python-pptx: filename=python_pptx-0.6.21-py3-none-any.whl size=470935 sha256=9d2e8da4a07c6b64fd58617871ca030872410620ebb507ea9310aa5c1988cf63
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k_6qbouh/wheels/f4/c7/af/d1d91f3decfaa7621033f30b69a29bf0b1206005663d233e7a
+  Building wheel for olefile (setup.py): started
+  Building wheel for olefile (setup.py): finished with status 'done'
+  Created wheel for olefile: filename=olefile-0.46-py2.py3-none-any.whl size=35417 sha256=4e33c1ae0638b4436b338a665cd60e56bc025c0b6b35df50a212f54a596e95b8
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k_6qbouh/wheels/7a/28/c9/4745d0108b03ae5933fd107bd3946eec0d9fa794f8ce837a46
+  Building wheel for wrapt (setup.py): started
+  Building wheel for wrapt (setup.py): finished with status 'done'
+  Created wheel for wrapt: filename=wrapt-1.14.1-cp311-cp311-linux_x86_64.whl size=83304 sha256=429bb34a1131a4b4cb24a0ee6094d1a14c42531d25dfd759cb14636b34912b6e
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k_6qbouh/wheels/eb/b6/fa/5ab6f4107cad63fa04c54ad78d75bb7035119bdd4f751df5ae
+Successfully built docx2txt validators python-docx python-pptx olefile wrapt
+Installing collected packages: webencodings, tokenizers, StrEnum, rfc3986, pytz, pygtrie, monotonic, invoke, docx2txt, commonmark, zipp, XlsxWriter, wrapt, websockets, watchdog, urllib3, tzlocal, typing-extensions, tqdm, tornado, toolz, tomlkit, toml, tenacity, sniffio, smmap, six, shapely, semver, regex, PyYAML, python-multipart, python-magic, pyrsistent, pypdf, pypandoc, pympler, pygments, pycparser, pyasn1, protobuf, platformdirs, pkginfo, pillow, packaging, olefile, numpy, nest-asyncio, mypy-extensions, multidict, more-itertools, MarkupSafe, Markdown, lxml, joblib, jeepney, idna, h11, grpcio, greenlet, google-crc32c, frozenlist, et-xmlfile, entrypoints, dotty-dict, docutils, diskcache, decorator, colorama, click, charset-normalizer, certifi, cachetools, blinker, backoff, attrs, async-timeout, yarl, validators, uvicorn, typing-inspect, typer, SQLAlchemy, rsa, rich, requests, python-pptx, python-docx, python-dateutil, pydantic, pyasn1-modules, pyarrow, proto-plus, pdf2image, parsimonious, openpyxl, numexpr, nltk, msg-parser, marshmallow, jsonschema, jinja2, jaraco.classes, importlib-metadata, googleapis-common-protos, google-resumable-media, gitdb, ecdsa, deprecation, deprecated, click-log, cffi, bleach, anyio, aiosignal, tiktoken, starlette, requests-toolbelt, realtime, readme-renderer, python-jose, pydeck, pandas, openapi-schema-pydantic, marshmallow-enum, httpcore, grpcio-status, google-auth, gitpython, cryptography, aiohttp, SecretStorage, python-gitlab, pdfminer.six, openai, httpx, grpc-google-iam-v1, google-api-core, fastapi, dataclasses-json, altair, supafunc, streamlit, storage3, postgrest, langchain, keyring, guidance, gotrue, google-cloud-core, argilla, anthropic, unstructured, twine, google-cloud-storage, google-cloud-resource-manager, google-cloud-bigquery, python-semantic-release, google_cloud_aiplatform, supabase
+Successfully installed Markdown-3.4.3 MarkupSafe-2.1.3 PyYAML-6.0 SQLAlchemy-2.0.15 SecretStorage-3.3.3 StrEnum-0.4.10 XlsxWriter-3.1.2 aiohttp-3.8.4 aiosignal-1.3.1 altair-4.2.2 anthropic-0.2.8 anyio-3.7.0 argilla-1.9.0 async-timeout-4.0.2 attrs-23.1.0 backoff-2.2.1 bleach-6.0.0 blinker-1.6.2 cachetools-5.3.1 certifi-2023.5.7 cffi-1.15.1 charset-normalizer-3.1.0 click-8.1.3 click-log-0.4.0 colorama-0.4.6 commonmark-0.9.1 cryptography-41.0.1 dataclasses-json-0.5.7 decorator-5.1.1 deprecated-1.2.14 deprecation-2.1.0 diskcache-5.6.1 docutils-0.20.1 docx2txt-0.8 dotty-dict-1.3.1 ecdsa-0.18.0 entrypoints-0.4 et-xmlfile-1.1.0 fastapi-0.95.2 frozenlist-1.3.3 gitdb-4.0.10 gitpython-3.1.31 google-api-core-2.10.2 google-auth-2.19.1 google-cloud-bigquery-3.11.0 google-cloud-core-2.3.2 google-cloud-resource-manager-1.6.3 google-cloud-storage-2.9.0 google-crc32c-1.5.0 google-resumable-media-2.5.0 google_cloud_aiplatform-1.25.0 googleapis-common-protos-1.59.0 gotrue-1.0.2 greenlet-2.0.2 grpc-google-iam-v1-0.12.6 grpcio-1.54.2 grpcio-status-1.48.2 guidance-0.0.53 h11-0.14.0 httpcore-0.16.3 httpx-0.23.3 idna-3.4 importlib-metadata-6.6.0 invoke-1.7.3 jaraco.classes-3.2.3 jeepney-0.8.0 jinja2-3.1.2 joblib-1.2.0 jsonschema-4.17.3 keyring-23.13.1 langchain-0.0.187 lxml-4.9.2 marshmallow-3.19.0 marshmallow-enum-1.5.1 monotonic-1.6 more-itertools-9.1.0 msg-parser-1.2.0 multidict-6.0.4 mypy-extensions-1.0.0 nest-asyncio-1.5.6 nltk-3.8.1 numexpr-2.8.4 numpy-1.23.5 olefile-0.46 openai-0.27.6 openapi-schema-pydantic-1.2.4 openpyxl-3.1.2 packaging-23.1 pandas-1.5.3 parsimonious-0.10.0 pdf2image-1.16.3 pdfminer.six-20221105 pillow-9.5.0 pkginfo-1.9.6 platformdirs-3.5.3 postgrest-0.10.6 proto-plus-1.22.2 protobuf-3.20.3 pyarrow-12.0.0 pyasn1-0.5.0 pyasn1-modules-0.3.0 pycparser-2.21 pydantic-1.10.9 pydeck-0.8.1b0 pygments-2.15.1 pygtrie-2.5.0 pympler-1.0.1 pypandoc-1.11 pypdf-3.8.1 pyrsistent-0.19.3 python-dateutil-2.8.2 python-docx-0.8.11 python-gitlab-3.15.0 python-jose-3.3.0 python-magic-0.4.27 python-multipart-0.0.6 python-pptx-0.6.21 python-semantic-release-7.33.2 pytz-2023.3 readme-renderer-37.3 realtime-1.0.0 regex-2023.6.3 requests-2.31.0 requests-toolbelt-1.0.0 rfc3986-1.5.0 rich-13.0.1 rsa-4.9 semver-2.13.0 shapely-1.8.5.post1 six-1.16.0 smmap-5.0.0 sniffio-1.3.0 starlette-0.27.0 storage3-0.5.2 streamlit-1.22.0 supabase-1.0.3 supafunc-0.2.2 tenacity-8.2.2 tiktoken-0.4.0 tokenizers-0.13.3 toml-0.10.2 tomlkit-0.11.8 toolz-0.12.0 tornado-6.3.2 tqdm-4.65.0 twine-3.8.0 typer-0.9.0 typing-extensions-4.6.3 typing-inspect-0.9.0 tzlocal-5.0.1 unstructured-0.6.5 urllib3-1.26.16 uvicorn-0.22.0 validators-0.20.0 watchdog-3.0.0 webencodings-0.5.1 websockets-10.4 wrapt-1.14.1 yarl-1.9.2 zipp-3.15.0
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+Removing intermediate container c13cf2d11838
+ ---> 69277f8116ff
+Step 6/7 : COPY . /code/
+ ---> 0637acddd471
+Step 7/7 : CMD ["uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "5050"]
+ ---> Running in 5b2006488ae9
+Removing intermediate container 5b2006488ae9
+ ---> ffaaa0462227
+Successfully built ffaaa0462227
+Successfully tagged ***.dkr.ecr.eu-west-3.amazonaws.com/quivr:8383f0700b130c9a332ee79ce4c871cbfc25f181
+The push refers to repository [***.dkr.ecr.eu-west-3.amazonaws.com/quivr]
+5d646818971a: Preparing
+5cfdbd1d92d2: Retrying in 1 second
+EOF
+Error: Process completed with exit code 1." ".github/workflows/aws.yml" ```name: Deploy to Amazon ECS
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: eu-west-3                 # set this to your preferred AWS region, e.g. us-west-1
+  ECR_REPOSITORY: quivr   # set this to your Amazon ECR repository name
+  ECS_SERVICE: quivr-backend                # set this to your Amazon ECS service name
+  ECS_CLUSTER: quivr                 # set this to your Amazon ECS cluster name
+  ECS_TASK_DEFINITION: .aws/task_definition.json # set this to the path to your Amazon ECS task definition
+                                               # file, e.g. .aws/task-definition.json
+  CONTAINER_NAME: quivr           # set this to the name of the container in the
+                                               # containerDefinitions section of your task definition
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    environment: production
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ env.ECS_TASK_DEFINITION }}
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true``` ".aws/task_definition.json" ```{
+    "taskDefinitionArn": "arn:aws:ecs:eu-west-3:253053805092:task-definition/quivr:11",
+    "containerDefinitions": [
+        {
+            "name": "quivr",
+            "image": "253053805092.dkr.ecr.eu-west-3.amazonaws.com/quivr:b80e95c20e2c3d78ef64b3a307e43d7d7823e77e",
+            "cpu": 256,
+            "memory": 512,
+            "portMappings": [
+                {
+                    "name": "quivr-5050-tcp",
+                    "containerPort": 5050,
+                    "hostPort": 5050,
+                    "protocol": "tcp",
+                    "appProtocol": "http"
+                }
+            ],
+            "essential": true,
+            "environment": [],
+            "environmentFiles": [
+                {
+                    "value": "arn:aws:s3:::quivr-env-variables/production.env",
+                    "type": "s3"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-create-group": "true",
+                    "awslogs-group": "/ecs/quivr",
+                    "awslogs-region": "eu-west-3",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            }
+        }
+    ],
+    "family": "quivr",
+    "taskRoleArn": "arn:aws:iam::253053805092:role/ecsTaskExecutionRole",
+    "executionRoleArn": "arn:aws:iam::253053805092:role/ecsTaskExecutionRole",
+    "networkMode": "awsvpc",
+    "revision": 11,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "ecs.capability.env-files.s3"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.29"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "FARGATE"
+    ],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "512",
+    "memory": "1024",
+    "runtimePlatform": {
+        "cpuArchitecture": "X86_64",
+        "operatingSystemFamily": "LINUX"
+    },
+    "registeredAt": "2023-06-03T15:46:30.484Z",
+    "registeredBy": "arn:aws:iam::253053805092:user/github",
+    "tags": []
+}```. please identify the error and give me corre complete github action code

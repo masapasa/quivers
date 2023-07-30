@@ -1,0 +1,305 @@
+"frontend/lib/api/auth/auth.ts" ```import { AxiosInstance } from "axios";
+
+export const createApiKey = async (
+  axiosInstance: AxiosInstance
+): Promise<string> => {
+  const response = await axiosInstance.post<{ api_key: string }>("/api-key");
+
+  return response.data.api_key;
+};```"frontend/lib/api/auth/useAuthApi.ts" ```import { useAxios } from "@/lib/hooks";
+
+import { createApiKey } from "./auth";
+
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export const useAuthApi = () => {
+  const { axiosInstance } = useAxios();
+
+  return {
+    createApiKey: async () => createApiKey(axiosInstance),
+  };
+};``` "frontend/lib/api/brain/utils/mapBackendMinimalBrainToMinimalBrain.ts" ```import {
+  BackendMinimalBrainForUser,
+  MinimalBrainForUser,
+} from "@/lib/context/BrainProvider/types";
+
+export const mapBackendMinimalBrainToMinimalBrain = (
+  backendMinimalBrain: BackendMinimalBrainForUser
+): MinimalBrainForUser => ({
+  id: backendMinimalBrain.id,
+  name: backendMinimalBrain.name,
+  role: backendMinimalBrain.rights,
+});```"frontend/lib/api/brain/utils/mapSubscriptionToBackendSubscription.ts" ```import { BrainRoleType } from "@/lib/components/NavBar/components/NavItems/components/BrainsDropDown/components/BrainActions/types";
+
+import { Subscription } from "../brain";
+
+export type BackendSubscription = { email: string; rights: BrainRoleType };
+
+export const mapSubscriptionToBackendSubscription = (
+  subscription: Subscription
+): BackendSubscription => ({
+  email: subscription.email,
+  rights: subscription.role,
+});```"frontend/lib/api/brain/utils/mapSubscriptionUpdatablePropertiesToBackendSubscriptionUpdatableProperties.ts" ```import { BrainRoleType } from "@/lib/components/NavBar/components/NavItems/components/BrainsDropDown/components/BrainActions/types";
+
+import { SubscriptionUpdatableProperties } from "../types";
+
+type BackendSubscriptionUpdatableProperties = {
+  rights: BrainRoleType | null;
+};
+export const mapSubscriptionUpdatablePropertiesToBackendSubscriptionUpdatableProperties =
+  (
+    subscriptionUpdatableProperties: SubscriptionUpdatableProperties
+  ): BackendSubscriptionUpdatableProperties => ({
+    rights: subscriptionUpdatableProperties.role,
+  });```"frontend/lib/api/brain/brain.ts" ```/* eslint-disable max-lines */
+import { AxiosInstance } from "axios";
+
+import { BrainRoleType } from "@/lib/components/NavBar/components/NavItems/components/BrainsDropDown/components/BrainActions/types";
+import {
+  BackendMinimalBrainForUser,
+  Brain,
+  MinimalBrainForUser,
+} from "@/lib/context/BrainProvider/types";
+import { Document } from "@/lib/types/Document";
+
+import { SubscriptionUpdatableProperties } from "./types";
+import { mapBackendMinimalBrainToMinimalBrain } from "./utils/mapBackendMinimalBrainToMinimalBrain";
+import {
+  BackendSubscription,
+  mapSubscriptionToBackendSubscription,
+} from "./utils/mapSubscriptionToBackendSubscription";
+import { mapSubscriptionUpdatablePropertiesToBackendSubscriptionUpdatableProperties } from "./utils/mapSubscriptionUpdatablePropertiesToBackendSubscriptionUpdatableProperties";
+
+export const getBrainDocuments = async (
+  brainId: string,
+  axiosInstance: AxiosInstance
+): Promise<Document[]> => {
+  const response = await axiosInstance.get<{ documents: Document[] }>(
+    `/explore/?brain_id=${brainId}`
+  );
+
+  return response.data.documents;
+};
+
+export type CreateBrainInput = {
+  name: string;
+  description?: string;
+  status?: string;
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+  openai_api_key?: string;
+};
+export const createBrain = async (
+  brain: CreateBrainInput,
+  axiosInstance: AxiosInstance
+): Promise<MinimalBrainForUser> => {
+  return mapBackendMinimalBrainToMinimalBrain(
+    (await axiosInstance.post<BackendMinimalBrainForUser>(`/brains/`, brain))
+      .data
+  );
+};
+
+export const getBrain = async (
+  brainId: string,
+  axiosInstance: AxiosInstance
+): Promise<Brain | undefined> => {
+  const brain = (
+    await axiosInstance.get<Brain | undefined>(`/brains/${brainId}/`)
+  ).data;
+
+  return brain;
+};
+
+export const deleteBrain = async (
+  brainId: string,
+  axiosInstance: AxiosInstance
+): Promise<void> => {
+  await axiosInstance.delete(`/brains/${brainId}/subscription`);
+};
+
+export const getDefaultBrain = async (
+  axiosInstance: AxiosInstance
+): Promise<MinimalBrainForUser | undefined> => {
+  return mapBackendMinimalBrainToMinimalBrain(
+    (await axiosInstance.get<BackendMinimalBrainForUser>(`/brains/default/`))
+      .data
+  );
+};
+
+export const getBrains = async (
+  axiosInstance: AxiosInstance
+): Promise<MinimalBrainForUser[]> => {
+  const { brains } = (
+    await axiosInstance.get<{ brains: BackendMinimalBrainForUser[] }>(
+      `/brains/`
+    )
+  ).data;
+
+  return brains.map(mapBackendMinimalBrainToMinimalBrain);
+};
+
+export type Subscription = { email: string; role: BrainRoleType };
+
+export const addBrainSubscriptions = async (
+  brainId: string,
+  subscriptions: Subscription[],
+  axiosInstance: AxiosInstance
+): Promise<void> => {
+  await axiosInstance.post(
+    `/brains/${brainId}/subscription`,
+    subscriptions.map(mapSubscriptionToBackendSubscription)
+  );
+};
+
+export const getBrainUsers = async (
+  brainId: string,
+  axiosInstance: AxiosInstance
+): Promise<Subscription[]> => {
+  const brainsUsers = (
+    await axiosInstance.get<BackendSubscription[]>(`/brains/${brainId}/users`)
+  ).data;
+
+  return brainsUsers.map((brainUser) => ({
+    email: brainUser.email,
+    role: brainUser.rights,
+  }));
+};
+
+export const updateBrainAccess = async (
+  brainId: string,
+  userEmail: string,
+  subscription: SubscriptionUpdatableProperties,
+  axiosInstance: AxiosInstance
+): Promise<void> => {
+  await axiosInstance.put(`/brains/${brainId}/subscription`, {
+    ...mapSubscriptionUpdatablePropertiesToBackendSubscriptionUpdatableProperties(
+      subscription
+    ),
+    email: userEmail,
+  });
+};
+
+export const setAsDefaultBrain = async (
+  brainId: string,
+  axiosInstance: AxiosInstance
+): Promise<void> => {
+  await axiosInstance.put(`/brains/${brainId}/default`);
+};```"frontend/lib/api/brain/useBrainApi.ts" ```import { useAxios } from "@/lib/hooks";
+
+import {
+  addBrainSubscriptions,
+  createBrain,
+  CreateBrainInput,
+  deleteBrain,
+  getBrain,
+  getBrainDocuments,
+  getBrains,
+  getBrainUsers,
+  getDefaultBrain,
+  setAsDefaultBrain,
+  Subscription,
+  updateBrainAccess,
+} from "./brain";
+import { SubscriptionUpdatableProperties } from "./types";
+
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export const useBrainApi = () => {
+  const { axiosInstance } = useAxios();
+
+  return {
+    getBrainDocuments: async (brainId: string) =>
+      getBrainDocuments(brainId, axiosInstance),
+    createBrain: async (brain: CreateBrainInput) =>
+      createBrain(brain, axiosInstance),
+    deleteBrain: async (id: string) => deleteBrain(id, axiosInstance),
+    getDefaultBrain: async () => getDefaultBrain(axiosInstance),
+    getBrains: async () => getBrains(axiosInstance),
+    getBrain: async (id: string) => getBrain(id, axiosInstance),
+    addBrainSubscriptions: async (
+      brainId: string,
+      subscriptions: Subscription[]
+    ) => addBrainSubscriptions(brainId, subscriptions, axiosInstance),
+    getBrainUsers: async (brainId: string) =>
+      getBrainUsers(brainId, axiosInstance),
+    updateBrainAccess: async (
+      brainId: string,
+      userEmail: string,
+      subscription: SubscriptionUpdatableProperties
+    ) => updateBrainAccess(brainId, userEmail, subscription, axiosInstance),
+    setAsDefaultBrain: async (brainId: string) =>
+      setAsDefaultBrain(brainId, axiosInstance),
+  };
+};```"frontend/lib/hooks/useFetch.ts" ```import { useEffect, useState } from "react";
+
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+
+import { useBrainConfig } from "../context/BrainConfigProvider/hooks/useBrainConfig";
+
+interface FetchInstance {
+  get: (url: string, headers?: HeadersInit) => Promise<Response>;
+  post: (
+    url: string,
+    body: BodyInit | null | undefined,
+    headers?: HeadersInit
+  ) => Promise<Response>;
+  put: (
+    url: string,
+    body: BodyInit | null | undefined,
+    headers?: HeadersInit
+  ) => Promise<Response>;
+  delete: (url: string, headers?: HeadersInit) => Promise<Response>;
+}
+
+const fetchInstance: FetchInstance = {
+  get: async (url, headers) => fetch(url, { method: "GET", headers }),
+  post: async (url, body, headers) =>
+    fetch(url, { method: "POST", body, headers }),
+  put: async (url, body, headers) =>
+    fetch(url, { method: "PUT", body, headers }),
+  delete: async (url, headers) => fetch(url, { method: "DELETE", headers }),
+};
+
+export const useFetch = (): { fetchInstance: FetchInstance } => {
+  const { session } = useSupabase();
+  const {
+    config: { backendUrl: configBackendUrl, openAiKey },
+  } = useBrainConfig();
+
+  const [instance, setInstance] = useState(fetchInstance);
+
+  const baseURL = `${process.env.NEXT_PUBLIC_BACKEND_URL ?? ""}`;
+  const backendUrl = configBackendUrl ?? baseURL;
+
+  useEffect(() => {
+    setInstance({
+      ...fetchInstance,
+      get: async (url, headers) =>
+        fetchInstance.get(`${backendUrl}${url}`, {
+          Authorization: `Bearer ${session?.access_token ?? ""}`,
+          "Openai-Api-Key": openAiKey ?? "",
+          ...headers,
+        }),
+      post: async (url, body, headers) =>
+        fetchInstance.post(`${backendUrl}${url}`, body, {
+          Authorization: `Bearer ${session?.access_token ?? ""}`,
+          "Openai-Api-Key": openAiKey ?? "",
+          ...headers,
+        }),
+      put: async (url, body, headers) =>
+        fetchInstance.put(`${backendUrl}${url}`, body, {
+          Authorization: `Bearer ${session?.access_token ?? ""}`,
+          "Openai-Api-Key": openAiKey ?? "",
+          ...headers,
+        }),
+      delete: async (url, headers) =>
+        fetchInstance.delete(`${backendUrl}${url}`, {
+          Authorization: `Bearer ${session?.access_token ?? ""}`,
+          "Openai-Api-Key": openAiKey ?? "",
+          ...headers,
+        }),
+    });
+  }, [session, backendUrl, openAiKey]);
+
+  return { fetchInstance: instance };
+};```. these are some of the api routes in nextjs javascript frontend. how can i create an api for stripe payment during signup for premium and gold users who can create increased number of brain and upload many files. give me only complete correct modified nextjs javascript code

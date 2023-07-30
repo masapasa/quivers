@@ -1,0 +1,252 @@
+"frontend/app/(auth)/signup/page.tsx" ```// frontend/app/(auth)/signup/page.tsx
+
+/* eslint-disable */
+"use client";
+import Link from "next/link";
+import { CardElement, useElements, useStripe, Elements } from "@stripe/react-stripe-js";
+
+import Button from "@/lib/components/ui/Button";
+import Card from "@/lib/components/ui/Card";
+import Field from "@/lib/components/ui/Field";
+import PageHeading from "@/lib/components/ui/PageHeading";
+import { useSignUp } from "./hooks/useSignUp";
+
+export default function SignUp() {
+  const {
+    handleSignUp,
+    isPending,
+    email,
+    password,
+    setEmail,
+    setPassword,
+    subscriptionType,
+    setSubscriptionType,
+    setPaymentMethodId,
+  } = useSignUp();
+ 
+    const handlePayment = async () => {
+      const stripe = useStripe();
+      const elements = useElements();
+      if (!stripe || !elements) {
+        return;
+      }
+
+      const cardElement = elements.getElement(CardElement);
+      if (!cardElement) {
+        return;
+      }
+
+      const { error, paymentMethod } = await stripe.createPaymentMethod({
+        type: "card",
+        card: cardElement,
+      });
+
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      setPaymentMethodId(paymentMethod.id);
+    };
+
+    return (
+      <main data-testid="sign-up-page">
+        <section className="min-h-[80vh] w-full h-full outline-none flex flex-col gap-5 items-center justify-center p-6">
+          <PageHeading title="Sign Up" subtitle="Create your account" />
+          <Card className="max-w-md w-full p-5 sm:p-10 text-left">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSignUp();
+              }}
+              className="flex flex-col gap-2"
+              data-testid="sign-up-form"
+            >
+              <Field
+                name="email"
+                required
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                data-testid="email-field"
+              />
+              <Field
+                name="password"
+                required
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                data-testid="password-field"
+              />
+              <div className="flex flex-col items-center justify-center mt-2 gap-2">
+                <label htmlFor="subscription-type">Choose a plan:</label>
+                <select
+                  id="subscription-type"
+                  value={subscriptionType}
+                  onChange={(e) => setSubscriptionType(e.target.value)}
+                >
+                  <option value="free">Free</option>
+                  <option value="premium">Premium</option>
+                  <option value="gold">Gold</option>
+                </select>
+              </div>
+              {subscriptionType !== "free" && (
+                <>
+                  <CardElement />
+                  <Button onClick={() => handlePayment()}>Save Payment Information</Button>
+                </>
+              )}
+              <Button data-testid="sign-up-button" isLoading={isPending}>
+                Sign Up
+              </Button>
+              <Link href="/login">Already registered? Sign in</Link>
+            </form>
+          </Card>
+        </section>
+      </main>
+    );
+  }``` "frontend/app/(auth)/signup/hooks/useSignUp.ts" ```import { loadStripe } from "@stripe/stripe-js";
+import { useState } from "react";
+
+import { useSupabase } from "@/lib/context/SupabaseProvider";
+import { useToast } from "@/lib/hooks/useToast";
+import { useEventTracking } from "@/services/analytics/useEventTracking";
+
+const stripePromise = loadStripe("pk_test_51Ji8uyFm7oLwLo8u");
+
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export const useSignUp = () => {
+  const { supabase } = useSupabase();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [subscriptionType, setSubscriptionType] = useState("free");
+  const [paymentMethodId, setPaymentMethodId] = useState(null);
+  const [isPending, setIsPending] = useState(false);
+  const { track } = useEventTracking();
+
+  const { publish } = useToast();
+  const handleSignUp = async () => {
+    void track("SIGNUP");
+    setIsPending(true);
+    let customerId;
+    try {
+      const response = await fetch("/api/create-customer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json();
+      customerId = data.customer.id;
+    } catch (error) {
+      console.error("Error creating customer:", error);
+      publish({
+        variant: "danger",
+        text: `Error creating customer: ${error.message}`,
+      });
+      setIsPending(false);
+      return;
+    }
+    let subscriptionId;
+    try {
+      const response = await fetch("/api/create-subscription", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          customerId,
+          paymentMethodId,
+          priceId:
+            subscriptionType === "premium"
+              ? "price_1Ji8vzFm7oLwLo8u"
+              : "price_1Ji8wGFm7oLwLo8u",
+        }),
+      });
+      const data = await response.json();
+      subscriptionId = data.subscription.id;
+    } catch (error) {
+      console.error("Error creating subscription:", error);
+      publish({
+        variant: "danger",
+        text: `Error creating subscription: ${error.message}`,
+      });
+      setIsPending(false);
+      return;
+    }
+
+    const { error } = await supabase.auth.signUp(
+      {
+        email: email,
+        password: password,
+      },
+      {
+        data: {
+          subscription_type: subscriptionType,
+          stripe_customer_id: customerId,
+          stripe_subscription_id: subscriptionId,
+        },
+      }
+    );
+
+    if (error) {
+      console.error("Error signing up:", error.message);
+      publish({
+        variant: "danger",
+        text: `Error signing up: ${error.message}`,
+      });
+    } else {
+      publish({
+        variant: "success",
+        text: "Confirmation Email sent, please check your email",
+      });
+    }
+    setIsPending(false);
+  };
+
+  return {
+    handleSignUp,
+    setEmail,
+    password,
+    setPassword,
+    isPending,
+    email,
+    subscriptionType,
+    setSubscriptionType,
+    paymentMethodId,
+    setPaymentMethodId,
+  };
+};``` "- error node_modules/@stripe/react-stripe-js/dist/react-stripe.js (265:0) @ parseElementsContext
+- error Error: Could not find Elements context; You need to wrap the part of your app that calls useStripe() in an <Elements> provider.
+    at SignUp (signup/page.tsx:26:86)
+null
+- wait compiling...
+- warn Fast Refresh had to perform a full reload due to a runtime error.
+- event compiled client and server successfully in 4.3s (2598 modules)
+- wait compiling...
+- warn Fast Refresh had to perform a full reload due to a runtime error.
+- event compiled client and server successfully in 2.3s (2598 modules)
+- warn Fast Refresh had to perform a full reload due to a runtime error.
+- wait compiling...
+- event compiled client and server successfully in 1539 ms (2598 modules)
+- warn Fast Refresh had to perform a full reload due to a runtime error.
+- wait compiling...
+- error ./app/(auth)/signup/page.tsx
+Error: 
+  x the name `stripe` is defined multiple times
+    ,-[/Users/aswin/Documents/quivr/frontend/app/(auth)/signup/page.tsx:24:1]
+ 24 |     setPaymentMethodId,
+ 25 |   } = useSignUp();
+ 26 |   //Error: Could not find Elements context; You need to wrap the part of your app that calls useStripe() in an <Elements> provider.
+ 27 |   const stripe = useStripe();
+    :         ^^^|^^
+    :            `-- previous definition of `stripe` here
+ 28 |   const stripe = useStripe();
+    :         ^^^|^^
+    :            `-- `stripe` redefined here
+ 29 |   const elements = useElements();
+ 30 | 
+ 31 |   const handlePayment = async () => {" . given the error put component into a Parent Component, which is wrapped in the Elements Tag. give me only complete correct modified nextjs javascript code with respective file names

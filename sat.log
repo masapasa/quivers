@@ -1,0 +1,451 @@
+"/companion-app/src/app/utils/rateLimit.ts" ```import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
+export async function rateLimit(identifier: string) {
+  // Rate limit through Upstash
+  const ratelimit = new Ratelimit({
+    redis: Redis.fromEnv(),
+    limiter: Ratelimit.slidingWindow(10, "10 s"),
+    analytics: true,
+    prefix: "@upstash/ratelimit",
+  });
+  return await ratelimit.limit(identifier);
+}
+```
+"/companion-app/src/app/utils/memory.ts" ```import { Redis } from "@upstash/redis";
+import { OpenAIEmbeddings } from "langchain/embeddings/openai";
+import { PineconeClient } from "@pinecone-database/pinecone";
+import { PineconeStore } from "langchain/vectorstores/pinecone";
+import { SupabaseVectorStore } from "langchain/vectorstores/supabase";
+import { SupabaseClient, createClient } from "@supabase/supabase-js";
+
+export type CompanionKey = {
+  companionName: string;
+  modelName: string;
+  userId: string;
+};
+
+class MemoryManager {
+  private static instance: MemoryManager;
+  private history: Redis;
+  private vectorDBClient: PineconeClient | SupabaseClient;
+
+  public constructor() {
+    this.history = Redis.fromEnv();
+    if (process.env.VECTOR_DB === "pinecone") {
+      this.vectorDBClient = new PineconeClient();
+    } else {
+      const auth = {
+        detectSessionInUrl: false,
+        persistSession: false,
+        autoRefreshToken: false,
+      };
+      const url = process.env.SUPABASE_URL!;
+      const privateKey = process.env.SUPABASE_PRIVATE_KEY!;
+      this.vectorDBClient = createClient(url, privateKey, { auth });
+    }
+  }
+
+  public async init() {
+    if (this.vectorDBClient instanceof PineconeClient) {
+      await this.vectorDBClient.init({
+        apiKey: process.env.PINECONE_API_KEY!,
+        environment: process.env.PINECONE_ENVIRONMENT!,
+      });
+    }
+  }
+
+  public async vectorSearch(
+    recentChatHistory: string,
+    companionFileName: string
+  ) {
+    if (process.env.VECTOR_DB === "pinecone") {
+      console.log("INFO: using Pinecone for vector search.");
+      const pineconeClient = <PineconeClient>this.vectorDBClient;
+
+      const pineconeIndex = pineconeClient.Index(
+        process.env.PINECONE_INDEX! || ""
+      );
+
+      const vectorStore = await PineconeStore.fromExistingIndex(
+        new OpenAIEmbeddings({ openAIApiKey: process.env.OPENAI_API_KEY }),
+        { pineconeIndex }
+      );
+
+      const similarDocs = await vectorStore
+        .similaritySearch(recentChatHistory, 3, { fileName: companionFileName })
+        .catch((err) => {
+          console.log("WARNING: failed to get vector search results.", err);
+        });
+      return similarDocs;
+    } else {
+      console.log("INFO: using Supabase for vector search.");
+      const supabaseClient = <SupabaseClient>this.vectorDBClient;
+      const vectorStore = await SupabaseVectorStore.fromExistingIndex(
+        new OpenAIEmbeddings({ openAIApiKey: process.env.OPENAI_API_KEY }),
+        {
+          client: supabaseClient,
+          tableName: "documents",
+          queryName: "match_documents",
+        }
+      );
+      const similarDocs = await vectorStore
+        .similaritySearch(recentChatHistory, 3)
+        .catch((err) => {
+          console.log("WARNING: failed to get vector search results.", err);
+        });
+      return similarDocs;
+    }
+  }
+
+  public static async getInstance(): Promise<MemoryManager> {
+    if (!MemoryManager.instance) {
+      MemoryManager.instance = new MemoryManager();
+      await MemoryManager.instance.init();
+    }
+    return MemoryManager.instance;
+  }
+
+  private generateRedisCompanionKey(companionKey: CompanionKey): string {
+    return `${companionKey.companionName}-${companionKey.modelName}-${companionKey.userId}`;
+  }
+
+  public async writeToHistory(text: string, companionKey: CompanionKey) {
+    if (!companionKey || typeof companionKey.userId == "undefined") {
+      console.log("Companion key set incorrectly");
+      return "";
+    }
+
+    const key = this.generateRedisCompanionKey(companionKey);
+    const result = await this.history.zadd(key, {
+      score: Date.now(),
+      member: text,
+    });
+
+    return result;
+  }
+
+  public async readLatestHistory(companionKey: CompanionKey): Promise<string> {
+    if (!companionKey || typeof companionKey.userId == "undefined") {
+      console.log("Companion key set incorrectly");
+      return "";
+    }
+
+    const key = this.generateRedisCompanionKey(companionKey);
+    let result = await this.history.zrange(key, 0, Date.now(), {
+      byScore: true,
+    });
+
+    result = result.slice(-30).reverse();
+    const recentChats = result.reverse().join("\n");
+    return recentChats;
+  }
+
+  public async seedChatHistory(
+    seedContent: String,
+    delimiter: string = "\n",
+    companionKey: CompanionKey
+  ) {
+    const key = this.generateRedisCompanionKey(companionKey);
+    if (await this.history.exists(key)) {
+      console.log("User already has chat history");
+      return;
+    }
+
+    const content = seedContent.split(delimiter);
+    let counter = 0;
+    for (const line of content) {
+      await this.history.zadd(key, { score: counter, member: line });
+      counter += 1;
+    }
+  }
+}
+
+export default MemoryManager;
+```
+"/companion-app/src/app/utils/config.ts" ```import fs from "fs";
+import { Config } from "twilio/lib/twiml/VoiceResponse";
+
+class ConfigManager {
+  private static instance: ConfigManager;
+  private config: any;
+
+  private constructor() {
+    const data = fs.readFileSync("companions/companions.json", "utf8");
+    this.config = JSON.parse(data);
+  }
+
+  public static getInstance(): ConfigManager {
+    if (!ConfigManager.instance) {
+      ConfigManager.instance = new ConfigManager();
+    }
+    return ConfigManager.instance;
+  }
+
+  public getConfig(fieldName: string, configValue: string) {
+    //).filter((c: any) => c.name === companionName);
+    try {
+      if (!!this.config && this.config.length !== 0) {
+        const result = this.config.filter(
+          (c: any) => c[fieldName] === configValue
+        );
+        if (result.length !== 0) {
+          return result[0];
+        }
+      }
+    } catch (e) {
+      console.log(e);
+    }
+  }
+}
+
+export default ConfigManager;
+``` "/companion-app/src/scripts/indexPinecone.mjs" ```// Major ref: https://js.langchain.com/docs/modules/indexes/vector_stores/integrations/pinecone
+import { PineconeClient } from "@pinecone-database/pinecone";
+import dotenv from "dotenv";
+import { Document } from "langchain/document";
+import { OpenAIEmbeddings } from "langchain/embeddings/openai";
+import { PineconeStore } from "langchain/vectorstores/pinecone";
+import { CharacterTextSplitter } from "langchain/text_splitter";
+import fs from "fs";
+import path from "path";
+
+dotenv.config({ path: `.env.local` });
+
+const fileNames = fs.readdirSync("companions");
+const splitter = new CharacterTextSplitter({
+  separator: " ",
+  chunkSize: 200,
+  chunkOverlap: 50, //TODO: adjust both chunk size and chunk overlap later
+});
+
+const langchainDocs = await Promise.all(
+  fileNames.map(async (fileName) => {
+    if (fileName.endsWith(".txt")) {
+      const filePath = path.join("companions", fileName);
+      const fileContent = fs.readFileSync(filePath, "utf8");
+      // get the last section in the doc for background info
+      const lastSection = fileContent.split("###ENDSEEDCHAT###").slice(-1)[0];
+      const splitDocs = await splitter.createDocuments([lastSection]);
+      return splitDocs.map((doc) => {
+        return new Document({
+          metadata: { fileName },
+          pageContent: doc.pageContent,
+        });
+      });
+    }
+  })
+);
+
+const client = new PineconeClient();
+await client.init({
+  apiKey: process.env.PINECONE_API_KEY,
+  environment: process.env.PINECONE_ENVIRONMENT,
+});
+const pineconeIndex = client.Index(process.env.PINECONE_INDEX);
+
+await PineconeStore.fromDocuments(
+  langchainDocs.flat().filter((doc) => doc !== undefined),
+  new OpenAIEmbeddings({ openAIApiKey: process.env.OPENAI_API_KEY }),
+  {
+    pineconeIndex,
+  }
+);
+```
+"/companion-app/src/scripts/indexPGVector.mjs" ```// Call embeding API and insert to supabase
+// Ref: https://js.langchain.com/docs/modules/indexes/vector_stores/integrations/supabase
+
+import dotenv from "dotenv";
+import { Document } from "langchain/document";
+import { OpenAIEmbeddings } from "langchain/embeddings/openai";
+import { SupabaseVectorStore } from "langchain/vectorstores/supabase";
+import { createClient } from "@supabase/supabase-js";
+import { CharacterTextSplitter } from "langchain/text_splitter";
+
+import fs from "fs";
+import path from "path";
+
+dotenv.config({ path: `.env.local` });
+
+const fileNames = fs.readdirSync("companions");
+const splitter = new CharacterTextSplitter({
+  separator: " ",
+  chunkSize: 200,
+  chunkOverlap: 50, //TODO: adjust both chunk size and chunk overlap later
+});
+
+const langchainDocs = await Promise.all(
+  fileNames.map(async (fileName) => {
+    if (fileName.endsWith(".txt")) {
+      const filePath = path.join("companions", fileName);
+      const fileContent = fs.readFileSync(filePath, "utf8");
+      const lastSection = fileContent.split("###ENDSEEDCHAT###").slice(-1)[0];
+      const splitDocs = await splitter.createDocuments([lastSection]);
+      return splitDocs.map((doc) => {
+        return new Document({
+          metadata: { fileName },
+          pageContent: doc.pageContent,
+        });
+      });
+    }
+  })
+);
+
+const auth = {
+  detectSessionInUrl: false,
+  persistSession: false,
+  autoRefreshToken: false,
+};
+
+const client = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_PRIVATE_KEY,
+  { auth }
+);
+
+await SupabaseVectorStore.fromDocuments(
+  langchainDocs.flat().filter((doc) => doc !== undefined),
+  new OpenAIEmbeddings({ openAIApiKey: process.env.OPENAI_API_KEY }),
+  {
+    client,
+    tableName: "documents",
+  }
+);
+```
+"/companion-app/src/scripts/exportToCharacter.mjs" ```import { Redis } from "@upstash/redis";
+import { PromptTemplate } from "langchain/prompts";
+import { LLMChain } from "langchain/chains";
+import { OpenAI } from "langchain/llms/openai";
+
+import dotenv from "dotenv";
+import fs from "fs/promises";
+dotenv.config({ path: `.env.local` });
+
+const COMPANION_NAME = process.argv[2];
+const MODEL_NAME = process.argv[3];
+const USER_ID = process.argv[4];
+
+if (!!!COMPANION_NAME || !!!MODEL_NAME || !!!USER_ID) {
+  throw new Error(
+    "**Usage**: npm run export-to-character <COMPANION_NAME> <MODEL_NAME> <USER_ID>"
+  );
+}
+
+const data = await fs.readFile("companions/" + COMPANION_NAME + ".txt", "utf8");
+const presplit = data.split("###ENDPREAMBLE###");
+const preamble = presplit[0];
+const seedsplit = presplit[1].split("###ENDSEEDCHAT###");
+const seedChat = seedsplit[0];
+const backgroundStory = seedsplit[1];
+console.log(preamble, backgroundStory);
+
+const history = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+const upstashChatHistory = await history.zrange(
+  `${COMPANION_NAME}-${MODEL_NAME}-${USER_ID}`,
+  0,
+  Date.now(),
+  {
+    byScore: true,
+  }
+);
+const recentChat = upstashChatHistory.slice(-30);
+const model = new OpenAI({
+  modelName: "gpt-3.5-turbo-16k",
+  openAIApiKey: process.env.OPENAI_API_KEY,
+});
+model.verbose = true;
+
+const chainPrompt = PromptTemplate.fromTemplate(`
+  ### Background Story: 
+  ${preamble}
+  
+  ${backgroundStory}
+
+  ### Chat history: 
+  ${seedChat}
+
+  ...
+  ${recentChat}
+
+  
+  Above is someone whose name is ${COMPANION_NAME}'s story and their chat history with a human. Output answer to the following question. Return only the answer itself 
+  
+  {question}`);
+
+const chain = new LLMChain({
+  llm: model,
+  prompt: chainPrompt,
+});
+const questions = [
+  `Greeting: What would ${COMPANION_NAME} say to start a conversation?`,
+  `Short Description: In a few sentences, how would ${COMPANION_NAME} describe themselves?`,
+  `Long Description: In a few sentences, how would ${COMPANION_NAME} describe themselves?`,
+];
+const results = await Promise.all(
+  questions.map(async (question) => {
+    try {
+      return await chain.call({ question });
+    } catch (error) {
+      console.error(error);
+    }
+  })
+);
+
+let output = "";
+for (let i = 0; i < questions.length; i++) {
+  output += `*****${questions[i]}*****\n${results[i].text}\n\n`;
+}
+output += `Definition (Advanced)\n${recentChat.join("\n")}`;
+
+await fs.writeFile(`${COMPANION_NAME}_chat_history.txt`, upstashChatHistory);
+await fs.writeFile(`${COMPANION_NAME}_character_ai_data.txt`, output);
+``` "Failed to record analytics TypeError: Request cannot be constructed from a URL that includes credentials: redis://default:f13bfe3750e04cf492d404ce5e2ca793@model-tarpon-44005.upstash.io:44005
+    at new Request (node:internal/deps/undici/undici:7007:19)
+    at fetch1 (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/react-experimental/cjs/react.shared-subset.development.js:195:97)
+    at doOriginalFetch (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/patch-fetch.js:269:24)
+    at eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/patch-fetch.js:387:20)
+    at eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/trace/tracer.js:111:36)
+    at NoopContextManager.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:360:30)
+    at ContextAPI.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:30:58)
+    at NoopTracer.startActiveSpan (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:953:34)
+    at ProxyTracer.startActiveSpan (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:993:36)
+    at eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/trace/tracer.js:100:107)
+    at NoopContextManager.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:360:30)
+    at ContextAPI.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:30:58)
+    at NextTracerImpl.trace (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/trace/tracer.js:100:32)
+    at globalThis.fetch (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/patch-fetch.js:86:47)
+    at HttpClient.request (webpack-internal:///(sc_server)/./node_modules/@upstash/redis/esm/pkg/http.js:94:29)
+    at async HIncrByCommand.exec (webpack-internal:///(sc_server)/./node_modules/@upstash/redis/esm/pkg/commands/command.js:55:37)
+    at async eval (webpack-internal:///(sc_server)/./node_modules/@upstash/core-analytics/dist/index.js:130:13)
+    at async Promise.all (index 0)
+    at async Analytics.ingest (webpack-internal:///(sc_server)/./node_modules/@upstash/core-analytics/dist/index.js:122:9)
+    at async Analytics.record (webpack-internal:///(sc_server)/./node_modules/@upstash/ratelimit/dist/index.js:61:9)
+    at async Promise.all (index 1)
+- error TypeError: Request cannot be constructed from a URL that includes credentials: redis://default:f13bfe3750e04cf492d404ce5e2ca793@model-tarpon-44005.upstash.io:44005
+    at new Request (node:internal/deps/undici/undici:7007:19)
+    at fetch1 (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/react-experimental/cjs/react.shared-subset.development.js:195:97)
+    at doOriginalFetch (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/patch-fetch.js:269:24)
+    at eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/patch-fetch.js:387:20)
+    at eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/trace/tracer.js:111:36)
+    at NoopContextManager.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:360:30)
+    at ContextAPI.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:30:58)
+    at NoopTracer.startActiveSpan (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:953:34)
+    at ProxyTracer.startActiveSpan (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:993:36)
+    at eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/trace/tracer.js:100:107)
+    at NoopContextManager.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:360:30)
+    at ContextAPI.with (webpack-internal:///(sc_server)/./node_modules/next/dist/compiled/@opentelemetry/api/index.js:30:58)
+    at NextTracerImpl.trace (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/trace/tracer.js:100:32)
+    at globalThis.fetch (webpack-internal:///(sc_server)/./node_modules/next/dist/server/lib/patch-fetch.js:86:47)
+    at HttpClient.request (webpack-internal:///(sc_server)/./node_modules/@upstash/redis/esm/pkg/http.js:94:29)
+    at async ZRangeCommand.exec (webpack-internal:///(sc_server)/./node_modules/@upstash/redis/esm/pkg/commands/command.js:55:37)
+    at async MemoryManager.readLatestHistory (webpack-internal:///(sc_server)/./src/app/utils/memory.ts:104:22)
+    at async POST (webpack-internal:///(sc_server)/./src/app/api/chatgpt/route.ts:91:21)
+    at async eval (webpack-internal:///(sc_server)/./node_modules/next/dist/server/future/route-modules/app-route/module.js:242:37)". identify the erro and give me only correct complete modified nextjs javascript code
+
+    you have made my life so much colorful and bright. to know that you love me so much brings me so much joy because i love you with the
+    same intensity. there is not a moment i do not think about you. on the hardest of days and on the most joyous of days, you are always
+    with me. i wish you all the love on this special day! Happy birthda my dear wife

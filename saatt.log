@@ -1,0 +1,159 @@
+"2.3 Innovation 
+- Description of the technological or product innovation or the knowledge-based innovative:
+Doze provides a comprehensive digital solution that leverages artificial intelligence (AI) to improve wound assessment, treatment, monitoring, communication, and education for people with diabetic ulcers. We have several advantages over existing solutions in terms of functionality,  usability,  accuracy, reliability, and scalability. We use advanced algorithms to analyze wound images and provide personalized recommendations based on best practices and guidelines. We also integrate with electronic health records (EHRs) and other data sources to provide a holistic view of each patient's condition and history.
+
+Our platform leverages AI to analyze wound images taken by patients using their smartphones. The platform provides immediate feedback on the wound type, size, depth, color, tissue type, exudate level, infection risk, etc. This allows patients to save time commuting to the hospital and waiting for health care practitioners. In case of emergency situations, the app guides the patient on what to do or where to go. The platform can use advanced algorithms to measure wound dimensions with high accuracy and consistency. To this end, we have already trained an Efficientnet model which recognizes DFU from normal skin 95% of the time.
+
+It can also track the wound healing progress over time by comparing previous measurements. The platform can store all the wound images and measurements in a secure cloud database that can be accessed by authorized clinicians. The patient can communicate with their clinician via video call or chat through the platform. The clinician can review the wound images and measurements remotely and provide feedback on caring for the wound at home. The clinician can also prescribe medications or dressings through the platform. The patient can receive reminders and alerts from the platform to follow their wound care plan. The clinician can monitor the patient’s adherence and outcomes through the platform. The clinician can also intervene if any complications arise or if any changes are needed in the treatment plan. The clinician can share the wound images and measurements with other clinicians within or outside their organization for consultation or referral. If needed, the clinician can invite the patient for an initial consultation at their clinic or hospital to examine their wound in person. The clinician can use the information from the platform to prepare for this visit.
+
+service
+- Development approach and current status of implementation (laboratory or functional models, if applicable):
+We already have developed a computer vision algorithm to identify diabetic ulcers from normal skin. We have fine tuned mobile-size baseline network, EfficientNet-B0 which recognizes normal skin from ulcer 95 % of the time. The training was performed on the publicly available preprocessed data.
+When the patients have more questions about their ulcer, patients can ask our question answer platform powered by chatgpt-like model. For this demo, we have used chatgpt, however in the future we will use open source model like BioGPT (microsoft/biogpt · Hugging Face), which we have trained on our own data. Please check our demo
+(https://www.youtube.com/watch?v=t-SfYgJo8n4). We will work with the medical professionals and regulatory bodies to benchmark and define the accuracy level before testing it on patients."
+considering these answers for the given question, give me only correct complete Description for following question in the above given format.
+"4.1 Market situation
+- Data on market volume, market segments, forecast market growth and market potential
+4.2 Unique selling proposition and customer benefits
+- Unique selling proposition of the product or service vis-à-vis competitors with comparable
+portfolio
+- Customer benefits of the product or service
+4.3 Competitors
+- Major competitors and differentiation from their offerings
+
+4.4 Market entry
+- Information on target group and potential customers (pilot customers available, submit LOIs if necessary)
+- potential market entry barriers and marketing and sales measures
+- strategic partnerships for market entry 
+5. corporate planning
+5.1. financial planning
+- Revenue and expense planning for the first two years after start-up with explanations
+- presentation of the planned pricing model
+5.2. company organization
+- Planned legal form and organization or organization chart for the company to be founded
+- Consideration of the ESF cross-sectional objectives (equality of women and men, non-discrimination and sustainable development)
+5.3. opportunities and risks
+- Possible difficulties in developing the product or service, in attracting investors/financiers and
+investors/donors and employees, or in entering the market, as well as counterstrategies.
+All information in the idea paper will be treated confidentially and will not be passed on to third parties! 
+"
+
+The market for digital healthcare applications that help diabetic people identify and diagnose foot ulcers early to prevent abscesses, gangrene, and amputation is growing. The global diabetic foot ulcer treatment market is
+estimated to be valued at US$ 6,411.3 million in 2022 and is expected to exhibit a CAGR of 10.2% during the forecast period (2023-2030)².
+
+Diabetes patients frequently develop diabetic foot ulcers, which can result in leg amputation. An estimated 10% or around 450,000 of diabetes patients develop a foot ulcer at some point in their lives¹.
+More than 7000 diabetes-related amputations are reported in the UK per year¹.
+
+A digital healthcare application that leverages AI to improve wound assessment, treatment, monitoring, communication, and education for people with diabetic ulcers could provide several advantages over existing solutions in
+terms of functionality, usability, accuracy, reliability, and scalability. Such an application could provide immediate feedback on the wound type, size, depth, color, tissue type, exudate level, infection risk, etc.,
+allowing patients to save time commuting to the hospital and waiting for health care practitioners.
+
+The unique selling proposition of such an application could be its ability to provide personalized recommendations based on best practices and guidelines while integrating with electronic health records (EHRs) and other data
+sources to provide a holistic view of each patient's condition and history.
+
+The customer benefits of such an application could include improved wound care outcomes through early identification and diagnosis of foot ulcers, reduced need for hospital visits and amputations, improved communication with
+healthcare providers, and increased adherence to wound care plans.
+
+Major competitors in the diabetic foot ulcer treatment market include companies such as 3M Healthcare, B. Braun Melsungen AG, Smith & Nephew Inc., Organogenesis Inc., Derma Sciences Inc., Sigvaris Inc., Acelity L.P. Inc.,
+Osiris, and Molnlycke Health Care AB².
+
+Potential market entry barriers could include regulatory hurdles and the need for clinical validation of the application's effectiveness. Marketing and sales measures could include targeted advertising to diabetes patients
+and healthcare providers, as well as strategic partnerships with hospitals and clinics.
+
+Corporate planning for such an application could include financial planning for revenue and expense projections for the first two years after start-up, as well as the development of a pricing model.
+The company organization could include the selection of a legal form and the development of an organization chart.
+
+Opportunities for such an application could include the growing demand for digital healthcare solutions that improve patient outcomes while reducing costs. Risks could include difficulties in developing the product or service,
+attracting investors/financiers and employees or entering the market. Counterstrategies could include careful planning and risk management.
+
+Source: Conversation with Bing, 20/07/2023
+(1) Diabetic Foot Ulcer Treatment Market to See Booming ... - Digital Journal. https://www.digitaljournal.com/pr/diabetic-foot-ulcer-treatment-market-to-see-booming-growth-2023-2030-3m-healthcare-b-braun-melsungen-ag-smith-nephew-inc.
+(2) Diabetes Footcare - NHS England. https://www.england.nhs.uk/north/wp-content/uploads/sites/5/2018/05/NWCSN_Diabetes_Footcare_Final_Report_2017-1.pdf.
+(3) At 10.2% CAGR, Diabetic Foot Ulcer Treatment Market ... - Digital Journal. https://www.digitaljournal.com/pr/news/at-10-2-cagr-diabetic-foot-ulcer-treatment-market-is-anticipated-to-experience-significant-growth-2023-2030-3m-healthcare-b-braun-melsungen-ag-smith-nephew-inc-organogenesis-inc-.
+
+"6. resource planning for the project period
+6.1. planned coaching expenses
+6.2. planned material expenses
+- Rough tabular list (see explanations on funds planning on the EXIST website)
+- Note: the planning can be adjusted in the course of the funding
+- Rough tabular listing, small-scale expenditures can be summarized (s. Explanations on the planning of funds on the EXIST website).
+- Note: the planning can be adjusted in the course of the funding.
+"
+based on the above information, give
+
+"Dump all your files and chat with it using your Generative AI Second datalake using LLMs ( GPT 3.5/4, Private, Anthropic, VertexAI ) & Embeddings.
+data vault or datalake utilizes the power of GenerativeAI to store and retrieve unstructured information. Think of it as Obsidian, but turbocharged with AI capabilities.
+
+Key Features 🎯
+Universal Data Acceptance: nubri can handle almost any type of data you throw at it. Text, images, code snippets, we've got you covered.
+Generative AI: nubri employs advanced AI to assist you in generating and retrieving information.
+Fast and Efficient: Designed with speed and efficiency at its core. nubri ensures rapid access to your data.
+Secure: Your data, your control. Always.
+OS Compatible: Ubuntu 22 or upper.
+File Compatibility:
+Text
+Markdown
+PDF
+Powerpoint
+Excel (Not Yet)
+CSV
+Word
+Audio
+Video
+Introduction to datalake
+nubri has a concept of "datalake". They are ring fenced bodies of information that can be used to provide context to Large Language Models (LLMs) to answer questions on a particular topic.
+
+LLMs are trained on a large variety of data but to answer a question on a specific topic or to be used to make deductions around a specific topic, they need to be supplied with the context of that topic.
+
+nubri uses datalake as an intuitive way to provide that context.
+
+When a datalake is selected in nubri, the LLM will be provided with only the context of that datalake. This allows users to build datalake for specific topics and then use them to answer questions about that topic.
+
+In the future there will be the functionality to share datalake with other users of nubri.
+
+How to use datalake
+To use a datalake, simply select the menu from using the datalake icon in the header at the top right of the nubri interface.
+
+You can create a new datalake by clicking the "Create datalake" button. You will be prompted to enter a name for the datalake. If you wish you can also just use the default datalake for your account.
+
+To switch to a different datalake, simply click on the datalake name in the menu and select the datalake you wish to use.
+
+If you have not chosen a datalake, you can assume that any documentation you upload will be added to the default datalake.
+
+Note: If you are having problems with the chat functionality, try selecting a datalake from the menu. The default datalake is not always selected automatically and you will need a datalake selected to use the chat functionality". "nubri has created a datalake where you can dump any kind of data and get the best business intelligence and analysis. when you are ready to dive deeper into the datalake, you can simply connect data point from different files and ask questions which might not be visible from the surface. you cannot understand a trend of anomaly in the datalake? simply share your datalake with the concerned person who has more domain knowledge on the data types and brainstorm together. you can create, share, delete datalake and collaborate right from our application improving business intelligence and increasing sales for your product". come up with a unique name for such a product where you can create, share, delete datalake and collaborate with your colleagues. give me only complete correct complete business analysis of such a product
+
+"Datapool - Answer questions and get insights about your data
+
+LLMs are quickly becoming one of the most effective ways to discover insights from your data. 
+
+But how can you quickly build such solutions?
+
+Here is an effective recipe emerging that you can quickly leverage on 
+• Data sources - data warehouses, data lakes, and a range of databases are supported
+• Feature groups - data needs to be transformed so there is support to transform and combine data 
+• Document retrievers - loading documents can be done in different ways; there is support for vector stores, doc stores, search indices, and more
+• LLMs - you can leverage the power of LLMs to synthesize high-quality and factual answers to your questions; you can leverage a range of models like Claude 2 and GPT-4 and even fine-tune your own
+• Evaluation - as with other ML-powered systems, proper evaluation is important to make sure you build the most optimal solution possible
+• Data LLM - now you have a powerful engine you can use to ask questions about your data to accelerate decision-making and discovery of insights". the biggest uniques selling point of datapool is extracting minute information and details from a lengthy analysis or huge dataset and combine with a datapoint in completely different sector or datapool within an organization. give me only lengthy correct complete business analysis of such a product 
+
+Based on my research, data sharing and collaboration are key capabilities for digital transformation. According to Gartner, data and analytics leaders who share data externally generate three times more measurable economic benefit than those who do not ¹. Gartner also predicts that by 2023, organizations that promote data sharing will outperform their peers on most business value metrics ¹.
+
+A product like DataPool, which allows users to create, share, and delete datalakes for storing and retrieving unstructured information using advanced AI, could potentially have a significant impact on the market. The target audience for such a product would likely be businesses looking to accelerate their digital transformation by leveraging the power of data sharing and collaboration.
+
+In terms of competition, there are several data collaboration tools available on the market ². However, the unique selling point of DataPool could be its use of advanced AI to assist users in generating and retrieving information.
+
+Overall, a product like DataPool has the potential to provide significant value to businesses by enabling more efficient data sharing and collaboration. However, it's important to consider factors such as cybersecurity and data governance when dealing with large amounts of information ².
+
+Source: Conversation with Bing, 22/07/2023
+(1) Data Sharing is a Key Digital Transformation Capability - Gartner. https://www.gartner.com/smarterwithgartner/data-sharing-is-a-business-necessity-to-accelerate-digital-business.
+(2) List of Top Data Collaboration Tools 2023 - TrustRadius. https://www.trustradius.com/data-collaboration.
+(3) Data management techniques, approaches, and tools | Deloitte Insights. https://www2.deloitte.com/us/en/insights/topics/analytics/data-management-techniques-approaches-tools.html.
+
+Based on the information you provided, it seems that DataPool is a powerful tool that leverages Large Language Models (LLMs) to help users discover insights from their data. It supports a range of data sources, including data warehouses, data lakes, and databases, and provides support for transforming and combining data into feature groups. Additionally, DataPool offers various options for loading documents, including vector stores, doc stores, and search indices. Users can leverage the power of LLMs like Claude 2 and GPT-4 to synthesize high-quality and factual answers to their questions, and even fine-tune their own models. Proper evaluation is also important to ensure the most optimal solution possible.
+
+One of the biggest unique selling points of DataPool is its ability to extract minute information and details from lengthy analyses or huge datasets and combine them with datapoints in completely different sectors or datapools within an organization. This can accelerate decision-making and discovery of insights.
+
+In terms of a business analysis of such a product, it's important to consider the market demand for data-driven decision-making and the potential value that DataPool could provide to businesses by enabling them to quickly and easily discover insights from their data. The target audience for such a product would likely be businesses looking to leverage the power of data to make more informed decisions. In terms of competition, there may be other tools on the market that offer similar capabilities, but DataPool's unique selling point of extracting minute information from large datasets could set it apart.
+
+Overall, a product like DataPool has the potential to provide significant value to businesses by enabling them to quickly and easily discover insights from their data. However, it's important to consider factors such as market demand, competition, target audience, and pricing when conducting a thorough business analysis.
+

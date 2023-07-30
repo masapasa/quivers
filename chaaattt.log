@@ -1,0 +1,568 @@
+"/Users/aswin/Documents/nextjs-fastapi-starter/api/index.py" ```import os
+import shutil
+import time
+from tempfile import SpooledTemporaryFile
+
+import pypandoc
+from api.auth.auth_bearer import JWTBearer
+from api.crawl.crawler import CrawlWebsite
+from fastapi import Depends, FastAPI, UploadFile
+from api.llm.qa import get_qa_llm
+from api.llm.summarization import llm_evaluate_summaries
+from api.logger import get_logger
+from api.middlewares.cors import add_cors_middleware
+from api.models.chats import ChatMessage
+from api.models.users import User
+from api.parsers.github import process_github
+from api.utils.file import convert_bytes, get_file_size
+from api.utils.processors import filter_file
+from api.utils.vectors import (CommonsDep, create_user, similarity_search,
+                           update_user_request_count)
+
+logger = get_logger(__name__)
+app = FastAPI()
+
+
+add_cors_middleware(app)
+
+
+
+@app.on_event("startup")
+async def startup_event():
+    pypandoc.download_pandoc()
+
+
+
+
+@app.post("/upload", dependencies=[Depends(JWTBearer())])
+async def upload_file(commons: CommonsDep,  file: UploadFile, enable_summarization: bool = False, credentials: dict = Depends(JWTBearer())):
+    max_brain_size = os.getenv("MAX_BRAIN_SIZE")
+   
+    user = User(email=credentials.get('email', 'none'))
+    user_vectors_response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact") \
+            .filter("user_id", "eq", user.email)\
+            .execute()
+    documents = user_vectors_response.data  # Access the data from the response
+    # Convert each dictionary to a tuple of items, then to a set to remove duplicates, and then back to a dictionary
+    user_unique_vectors = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+
+    current_brain_size = sum(float(doc['size']) for doc in user_unique_vectors)
+
+    file_size = get_file_size(file)
+
+    remaining_free_space =  float(max_brain_size) - (current_brain_size)
+
+    if remaining_free_space - file_size < 0:
+        message = {"message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}", "type": "error"}
+    else: 
+        message = await filter_file(file, enable_summarization, commons['supabase'], user)
+ 
+    return message
+@app.post("/chat/", dependencies=[Depends(JWTBearer())])
+async def chat_endpoint(commons: CommonsDep, chat_message: ChatMessage, file_name: str = "", credentials: dict = Depends(JWTBearer())):
+    user = User(email=credentials.get('email', 'none'))
+    date = time.strftime("%Y%m%d")
+    max_requests_number = os.getenv("MAX_REQUESTS_NUMBER")
+    response = commons['supabase'].from_('users').select(
+        '*').filter("user_id", "eq", user.email).filter("date", "eq", date).execute()
+    userItem = next(iter(response.data or []), {"requests_count": 0})
+    old_request_count = userItem['requests_count']
+
+    history = chat_message.history
+    history.append(("user", chat_message.question))
+
+    chat_message.file_name = file_name
+    qa = get_qa_llm(chat_message, user.email)
+
+    if old_request_count == 0:
+        create_user(user_id=user.email, date=date)
+    elif old_request_count < float(max_requests_number):
+        update_user_request_count(
+            user_id=user.email, date=date, requests_count=old_request_count+1)
+    else:
+        history.append(('assistant', "You have reached your requests limit"))
+        return {"history": history}
+    if chat_message.use_summarization:
+        summaries = similarity_search(
+            chat_message.question, table='match_summaries')
+        evaluations = llm_evaluate_summaries(
+            chat_message.question, summaries, chat_message.model)
+        logger.info('Evaluations: %s', evaluations)
+        if evaluations:
+            reponse = commons['supabase'].from_('vectors').select(
+                '*').in_('id', values=[e['document_id'] for e in evaluations]).execute()
+            additional_context = '---\nAdditional Context={}'.format(
+                '---\n'.join(data['content'] for data in reponse.data)
+            ) + '\n'
+        model_response = qa(
+            {"question": additional_context + chat_message.question})
+    else:
+        model_response = qa({"question": chat_message.question})
+    history.append(("assistant", model_response["answer"]))
+    print("history", history)
+
+    return {"history": history}
+@app.post("/crawl/", dependencies=[Depends(JWTBearer())])
+async def crawl_endpoint(commons: CommonsDep, crawl_website: CrawlWebsite, enable_summarization: bool = False, credentials: dict = Depends(JWTBearer())):
+    max_brain_size = os.getenv("MAX_BRAIN_SIZE")
+   
+    user = User(email=credentials.get('email', 'none'))
+    user_vectors_response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact") \
+            .filter("user_id", "eq", user.email)\
+            .execute()
+    documents = user_vectors_response.data
+    user_unique_vectors = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+
+    current_brain_size = sum(float(doc['size']) for doc in user_unique_vectors)
+
+    file_size = 1000000
+
+    remaining_free_space =  float(max_brain_size) - (current_brain_size)
+
+    if remaining_free_space - file_size < 0:
+        message = {"message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}", "type": "error"}
+    else: 
+        user = User(email=credentials.get('email', 'none'))
+        if not crawl_website.checkGithub():
+
+            file_path, file_name = crawl_website.process()
+            spooled_file = SpooledTemporaryFile()
+            with open(file_path, 'rb') as f:
+                shutil.copyfileobj(f, spooled_file)
+            file = UploadFile(file=spooled_file, filename=file_name)
+            message = await filter_file(file, enable_summarization, commons['supabase'], user=user)
+            return message
+        else:
+            message = await process_github(crawl_website.url, "false", user=user, supabase=commons['supabase'])
+@app.get("/explore", dependencies=[Depends(JWTBearer())])
+async def explore_endpoint(commons: CommonsDep,credentials: dict = Depends(JWTBearer()) ):
+    user = User(email=credentials.get('email', 'none'))
+    response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact").filter("user_id", "eq", user.email).execute()
+    documents = response.data
+    unique_data = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+    unique_data.sort(key=lambda x: int(x['size']), reverse=True)
+    return {"documents": unique_data}
+@app.delete("/explore/{file_name}", dependencies=[Depends(JWTBearer())])
+async def delete_endpoint(commons: CommonsDep, file_name: str, credentials: dict = Depends(JWTBearer())):
+    user = User(email=credentials.get('email', 'none'))
+    commons['supabase'].table("summaries").delete().match(
+        {"metadata->>file_name": file_name}).execute()
+    commons['supabase'].table("vectors").delete().match(
+        {"metadata->>file_name": file_name, "user_id": user.email}).execute()
+    return {"message": f"{file_name} of user {user.email} has been deleted."}
+@app.get("/explore/{file_name}", dependencies=[Depends(JWTBearer())])
+async def download_endpoint(commons: CommonsDep, file_name: str,credentials: dict = Depends(JWTBearer()) ):
+    user = User(email=credentials.get('email', 'none'))
+    response = commons['supabase'].table("vectors").select(
+        "metadata->>file_name, metadata->>file_size, metadata->>file_extension, metadata->>file_url", "content").match({"metadata->>file_name": file_name, "user_id": user.email}).execute()
+    documents = response.data
+    return {"documents": documents}
+
+@app.get("/user", dependencies=[Depends(JWTBearer())])
+async def get_user_endpoint(commons: CommonsDep, credentials: dict = Depends(JWTBearer())):
+    user = User(email=credentials.get('email', 'none'))
+    user_vectors_response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact") \
+            .filter("user_id", "eq", user.email)\
+            .execute()
+    documents = user_vectors_response.data
+    user_unique_vectors = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+
+    current_brain_size = sum(float(doc['size']) for doc in user_unique_vectors)
+
+    max_brain_size = os.getenv("MAX_BRAIN_SIZE")
+    user = User(email=credentials.get('email', 'none'))
+    date = time.strftime("%Y%m%d")
+    max_requests_number = os.getenv("MAX_REQUESTS_NUMBER")
+    requests_stats = commons['supabase'].from_('users').select(
+    '*').filter("user_id", "eq", user.email).execute()
+
+    return {"email":user.email, 
+            "max_brain_size": max_brain_size, 
+            "current_brain_size": current_brain_size, 
+            "max_requests_number": max_requests_number,
+            "requests_stats" : requests_stats.data,
+            "date": date,
+            }
+@app.get("/")
+async def root():
+    return {"status": "OK"}```. "/Users/aswin/Documents/nextjs-fastapi-starter/api/llm/qa.py" ```import os
+from typing import Any, List
+from langchain.chains import ConversationalRetrievalChain
+from langchain.chat_models import ChatOpenAI, ChatVertexAI
+from langchain.chat_models.anthropic import ChatAnthropic
+from langchain.docstore.document import Document
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.llms import VertexAI
+from langchain.memory import ConversationBufferMemory
+from langchain.vectorstores import SupabaseVectorStore
+from api.llm import LANGUAGE_PROMPT
+from api.models.chats import ChatMessage
+from supabase import Client, create_client
+class CustomSupabaseVectorStore(SupabaseVectorStore):
+    user_id: str
+    file_name: str
+
+    def __init__(self, client: Client, embedding: OpenAIEmbeddings, table_name: str, user_id: str = "none", file_name: str = ""):
+        super().__init__(client, embedding, table_name)
+        self.user_id = user_id
+        self.file_name = file_name
+
+    def similarity_search(
+        self,
+        query: str,
+        user_id: str = "none",
+        table: str = "match_vectors",
+        k: int = 4,
+        threshold: float = 0.5,
+        **kwargs: Any
+    ) -> List[Document]:
+        vectors = self._embedding.embed_documents([query])
+        query_embedding = vectors[0]
+        res = self._client.rpc(
+            table,
+            {
+                "query_embedding": query_embedding,
+                "match_count": k,
+                "p_user_id": self.user_id,
+                "p_file_name": self.file_name,
+            },
+        ).execute()
+
+        match_result = [
+            (
+                Document(
+                    metadata=search.get("metadata", {}),
+                    page_content=search.get("content", ""),
+                ),
+                search.get("similarity", 0.0),
+            )
+            for search in res.data
+            if search.get("content")
+        ]
+
+        documents = [doc for doc, _ in match_result]
+
+        return documents
+
+def get_environment_variables():
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+    return openai_api_key, anthropic_api_key, supabase_url, supabase_key
+def create_clients_and_embeddings(openai_api_key, supabase_url, supabase_key):
+    embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+    supabase_client = create_client(supabase_url, supabase_key)
+    
+    return supabase_client, embeddings
+def get_qa_llm(chat_message: ChatMessage, user_id: str):
+    openai_api_key, anthropic_api_key, supabase_url, supabase_key = get_environment_variables()
+    supabase_client, embeddings = create_clients_and_embeddings(openai_api_key, supabase_url, supabase_key)
+    vector_store = CustomSupabaseVectorStore(
+        supabase_client,
+        embeddings,
+        table_name="vectors",
+        user_id=user_id,
+        file_name=chat_message.file_name
+    )
+    memory = ConversationBufferMemory(
+        memory_key="chat_history", return_messages=True)
+
+    qa = None
+    ConversationalRetrievalChain.prompts = LANGUAGE_PROMPT
+    if chat_message.model.startswith("gpt"):
+        qa = ConversationalRetrievalChain.from_llm(
+            ChatOpenAI(
+                model_name=chat_message.model,
+                openai_api_key=openai_api_key,
+                temperature=chat_message.temperature,
+                max_tokens=chat_message.max_tokens),
+            vector_store.as_retriever(),
+            memory=memory,
+            verbose=True,
+            max_tokens_limit=1024)
+    elif chat_message.model.startswith("vertex"):
+        qa = ConversationalRetrievalChain.from_llm(
+            ChatVertexAI(), vector_store.as_retriever(), memory=memory, verbose=False, max_tokens_limit=1024)
+    elif anthropic_api_key and chat_message.model.startswith("claude"):
+        qa = ConversationalRetrievalChain.from_llm(
+            ChatAnthropic(
+                model=chat_message.model,
+                anthropic_api_key=anthropic_api_key,
+                temperature=chat_message.temperature,
+                max_tokens_to_sample=chat_message.max_tokens),
+            vector_store.as_retriever(),
+            memory=memory,
+            verbose=False,
+            max_tokens_limit=102400)
+    return qa``` "/Users/aswin/Documents/nextjs-fastapi-starter/api/utils/vectors.py" ```import os
+from typing import Annotated, List, Tuple
+import dotenv
+from fastapi import Depends, UploadFile
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.schema import Document
+from langchain.vectorstores import SupabaseVectorStore
+from api.llm.summarization import llm_summerize
+from api.logger import get_logger
+from pydantic import BaseModel
+from supabase import Client, create_client
+dotenv.load_dotenv(verbose=True)
+logger = get_logger(__name__)
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+supabase_url = os.environ.get("SUPABASE_URL")
+supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+supabase_client: Client = create_client(supabase_url, supabase_key)
+documents_vector_store = SupabaseVectorStore(
+    supabase_client, embeddings, table_name="vectors")
+summaries_vector_store = SupabaseVectorStore(
+    supabase_client, embeddings, table_name="summaries")
+def common_dependencies():
+    return {
+        "supabase": supabase_client,
+        "embeddings": embeddings,
+        "documents_vector_store": documents_vector_store,
+        "summaries_vector_store": summaries_vector_store
+    }
+CommonsDep = Annotated[dict, Depends(common_dependencies)]
+def create_summary(document_id, content, metadata):
+    logger.info(f"Summarizing document {content[:100]}")
+    summary = llm_summerize(content)
+    logger.info(f"Summary: {summary}")
+    metadata['document_id'] = document_id
+    summary_doc_with_metadata = Document(
+        page_content=summary, metadata=metadata)
+    sids = summaries_vector_store.add_documents(
+        [summary_doc_with_metadata])
+    if sids and len(sids) > 0:
+        supabase_client.table("summaries").update(
+            {"document_id": document_id}).match({"id": sids[0]}).execute()
+
+def create_vector(user_id,doc):
+    logger.info(f"Creating vector for document")
+    logger.info(f"Document: {doc}")
+    try:
+        sids = documents_vector_store.add_documents(
+            [doc])
+        if sids and len(sids) > 0:
+            supabase_client.table("vectors").update(
+                {"user_id": user_id}).match({"id": sids[0]}).execute()
+    except Exception as e:
+        logger.error(f"Error creating vector for document {e}")
+
+def create_user(user_id, date):
+    logger.info(f"New user entry in db document for user {user_id}")
+    supabase_client.table("users").insert(
+        {"user_id": user_id, "date": date, "requests_count": 1}).execute()
+
+def update_user_request_count(user_id, date, requests_count):
+    logger.info(f"User {user_id} request count updated to {requests_count}")
+    supabase_client.table("users").update(
+        { "requests_count": requests_count}).match({"user_id": user_id, "date": date}).execute()
+def create_embedding(content):
+    return embeddings.embed_query(content)
+def similarity_search(query, table='match_summaries', top_k=5, threshold=0.5):
+    query_embedding = create_embedding(query)
+    summaries = supabase_client.rpc(
+        table, {'query_embedding': query_embedding,
+                'match_count': top_k, 'match_threshold': threshold}
+    ).execute()
+    return summaries.data```"/Users/aswin/Documents/nextjs-fastapi-starter/api/index.py" ```import os
+import shutil
+import time
+from tempfile import SpooledTemporaryFile
+
+import pypandoc
+from api.auth.auth_bearer import JWTBearer
+from api.crawl.crawler import CrawlWebsite
+from fastapi import Depends, FastAPI, UploadFile
+from api.llm.qa import get_qa_llm
+from api.llm.summarization import llm_evaluate_summaries
+from api.logger import get_logger
+from api.middlewares.cors import add_cors_middleware
+from api.models.chats import ChatMessage
+from api.models.users import User
+from api.parsers.github import process_github
+from api.utils.file import convert_bytes, get_file_size
+from api.utils.processors import filter_file
+from api.utils.vectors import (CommonsDep, create_user, similarity_search,
+                           update_user_request_count)
+
+logger = get_logger(__name__)
+app = FastAPI()
+
+
+add_cors_middleware(app)
+
+
+
+@app.on_event("startup")
+async def startup_event():
+    pypandoc.download_pandoc()
+
+
+
+
+@app.post("/upload", dependencies=[Depends(JWTBearer())])
+async def upload_file(commons: CommonsDep,  file: UploadFile, enable_summarization: bool = False, credentials: dict = Depends(JWTBearer())):
+    max_brain_size = os.getenv("MAX_BRAIN_SIZE")
+   
+    user = User(email=credentials.get('email', 'none'))
+    user_vectors_response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact") \
+            .filter("user_id", "eq", user.email)\
+            .execute()
+    documents = user_vectors_response.data  # Access the data from the response
+    # Convert each dictionary to a tuple of items, then to a set to remove duplicates, and then back to a dictionary
+    user_unique_vectors = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+
+    current_brain_size = sum(float(doc['size']) for doc in user_unique_vectors)
+
+    file_size = get_file_size(file)
+
+    remaining_free_space =  float(max_brain_size) - (current_brain_size)
+
+    if remaining_free_space - file_size < 0:
+        message = {"message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}", "type": "error"}
+    else: 
+        message = await filter_file(file, enable_summarization, commons['supabase'], user)
+ 
+    return message
+@app.post("/chat/", dependencies=[Depends(JWTBearer())])
+async def chat_endpoint(commons: CommonsDep, chat_message: ChatMessage, file_name: str = "", credentials: dict = Depends(JWTBearer())):
+    user = User(email=credentials.get('email', 'none'))
+    date = time.strftime("%Y%m%d")
+    max_requests_number = os.getenv("MAX_REQUESTS_NUMBER")
+    response = commons['supabase'].from_('users').select(
+        '*').filter("user_id", "eq", user.email).filter("date", "eq", date).execute()
+    userItem = next(iter(response.data or []), {"requests_count": 0})
+    old_request_count = userItem['requests_count']
+
+    history = chat_message.history
+    history.append(("user", chat_message.question))
+
+    chat_message.file_name = file_name
+    qa = get_qa_llm(chat_message, user.email)
+
+    if old_request_count == 0:
+        create_user(user_id=user.email, date=date)
+    elif old_request_count < float(max_requests_number):
+        update_user_request_count(
+            user_id=user.email, date=date, requests_count=old_request_count+1)
+    else:
+        history.append(('assistant', "You have reached your requests limit"))
+        return {"history": history}
+    if chat_message.use_summarization:
+        summaries = similarity_search(
+            chat_message.question, table='match_summaries')
+        evaluations = llm_evaluate_summaries(
+            chat_message.question, summaries, chat_message.model)
+        logger.info('Evaluations: %s', evaluations)
+        if evaluations:
+            reponse = commons['supabase'].from_('vectors').select(
+                '*').in_('id', values=[e['document_id'] for e in evaluations]).execute()
+            additional_context = '---\nAdditional Context={}'.format(
+                '---\n'.join(data['content'] for data in reponse.data)
+            ) + '\n'
+        model_response = qa(
+            {"question": additional_context + chat_message.question})
+    else:
+        model_response = qa({"question": chat_message.question})
+    history.append(("assistant", model_response["answer"]))
+    print("history", history)
+
+    return {"history": history}
+@app.post("/crawl/", dependencies=[Depends(JWTBearer())])
+async def crawl_endpoint(commons: CommonsDep, crawl_website: CrawlWebsite, enable_summarization: bool = False, credentials: dict = Depends(JWTBearer())):
+    max_brain_size = os.getenv("MAX_BRAIN_SIZE")
+   
+    user = User(email=credentials.get('email', 'none'))
+    user_vectors_response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact") \
+            .filter("user_id", "eq", user.email)\
+            .execute()
+    documents = user_vectors_response.data
+    user_unique_vectors = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+
+    current_brain_size = sum(float(doc['size']) for doc in user_unique_vectors)
+
+    file_size = 1000000
+
+    remaining_free_space =  float(max_brain_size) - (current_brain_size)
+
+    if remaining_free_space - file_size < 0:
+        message = {"message": f"❌ User's brain will exceed maximum capacity with this upload. Maximum file allowed is : {convert_bytes(remaining_free_space)}", "type": "error"}
+    else: 
+        user = User(email=credentials.get('email', 'none'))
+        if not crawl_website.checkGithub():
+
+            file_path, file_name = crawl_website.process()
+            spooled_file = SpooledTemporaryFile()
+            with open(file_path, 'rb') as f:
+                shutil.copyfileobj(f, spooled_file)
+            file = UploadFile(file=spooled_file, filename=file_name)
+            message = await filter_file(file, enable_summarization, commons['supabase'], user=user)
+            return message
+        else:
+            message = await process_github(crawl_website.url, "false", user=user, supabase=commons['supabase'])
+@app.get("/explore", dependencies=[Depends(JWTBearer())])
+async def explore_endpoint(commons: CommonsDep,credentials: dict = Depends(JWTBearer()) ):
+    user = User(email=credentials.get('email', 'none'))
+    response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact").filter("user_id", "eq", user.email).execute()
+    documents = response.data
+    unique_data = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+    unique_data.sort(key=lambda x: int(x['size']), reverse=True)
+    return {"documents": unique_data}
+@app.delete("/explore/{file_name}", dependencies=[Depends(JWTBearer())])
+async def delete_endpoint(commons: CommonsDep, file_name: str, credentials: dict = Depends(JWTBearer())):
+    user = User(email=credentials.get('email', 'none'))
+    commons['supabase'].table("summaries").delete().match(
+        {"metadata->>file_name": file_name}).execute()
+    commons['supabase'].table("vectors").delete().match(
+        {"metadata->>file_name": file_name, "user_id": user.email}).execute()
+    return {"message": f"{file_name} of user {user.email} has been deleted."}
+@app.get("/explore/{file_name}", dependencies=[Depends(JWTBearer())])
+async def download_endpoint(commons: CommonsDep, file_name: str,credentials: dict = Depends(JWTBearer()) ):
+    user = User(email=credentials.get('email', 'none'))
+    response = commons['supabase'].table("vectors").select(
+        "metadata->>file_name, metadata->>file_size, metadata->>file_extension, metadata->>file_url", "content").match({"metadata->>file_name": file_name, "user_id": user.email}).execute()
+    documents = response.data
+    return {"documents": documents}
+
+@app.get("/user", dependencies=[Depends(JWTBearer())])
+async def get_user_endpoint(commons: CommonsDep, credentials: dict = Depends(JWTBearer())):
+    user = User(email=credentials.get('email', 'none'))
+    user_vectors_response = commons['supabase'].table("vectors").select(
+        "name:metadata->>file_name, size:metadata->>file_size", count="exact") \
+            .filter("user_id", "eq", user.email)\
+            .execute()
+    documents = user_vectors_response.data
+    user_unique_vectors = [dict(t) for t in set(tuple(d.items()) for d in documents)]
+
+    current_brain_size = sum(float(doc['size']) for doc in user_unique_vectors)
+
+    max_brain_size = os.getenv("MAX_BRAIN_SIZE")
+    user = User(email=credentials.get('email', 'none'))
+    date = time.strftime("%Y%m%d")
+    max_requests_number = os.getenv("MAX_REQUESTS_NUMBER")
+    requests_stats = commons['supabase'].from_('users').select(
+    '*').filter("user_id", "eq", user.email).execute()
+
+    return {"email":user.email, 
+            "max_brain_size": max_brain_size, 
+            "current_brain_size": current_brain_size, 
+            "max_requests_number": max_requests_number,
+            "requests_stats" : requests_stats.data,
+            "date": date,
+            }
+@app.get("/")
+async def root():
+    return {"status": "OK"}```. when i print("history", history) in index.py i get the response value. but i am not able to see this
+    response on the web browser. i guess the error is on the nextjs frontend when i tried to pass the history prop to the ChatMessages.
+    give me complete correct modified code to see the response on the webpage
